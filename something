@@ -12,13 +12,13 @@ char *keyWordList[] = {"include","auto","break","case","char","const","continue"
                       };//by order
 
 char *symbolList[] = { "+","-","*","/","%",";",",","{","}",")","(",">","<","=","[","]",":","?","!","&","|",
-                       "++","--","==","/*","*/",":=",">=","<=","!=","&&","||","+=","-=","*=","/=","^",">>","<<","~"
+                       "++","--","==","\'","\"",":=",">=","<=","!=","&&","||","+=","-=","*=","/=","^",">>","<<","~", "#"
                      };//by order unnecessary notation
 
 const int inBufSize = 100;
 const int WORD_MAX_LEN = 100;
 const int KEY_WORD_NUM = 32;
-const int SYMBOL_NUM = 40;
+const int SYMBOL_NUM = 41;
 
 int noteState;   // 0表示无注释状态
 /*
@@ -39,7 +39,7 @@ bool bdFlag;
 
 void init(FILE *, char []);
 int read(FILE *, char [], int);    //前向声明
-void wordOutput(char *);
+void wordOutput(FILE *, char *);
 
 void preProcess()
 {
@@ -198,9 +198,11 @@ void preProcess()
             case 7:
                 fprintf(fpre, "%c", preInBuf[prePt]);
                 noteState = 5;
+                break;
             case 8:
                 fprintf(fpre, "%c", preInBuf[prePt]);
                 noteState = 6;
+                break;
         }
 
         prePt++;
@@ -325,7 +327,7 @@ double getNum() //重载
 
 }*/
 
-void wordAnalyse(char word[], int len)  //把Flag们筛剩一个，或者一个都没有
+void wordAnalyse(FILE *ftable, char word[], int len)  //把Flag们筛剩一个，或者一个都没有
 {
     word[len] = '\0';
 
@@ -342,6 +344,9 @@ void wordAnalyse(char word[], int len)  //把Flag们筛剩一个，或者一个�
         }
         if(tmpFound == false)
             kyFlag = false;
+
+
+
     }
 
     if(idFlag == true)
@@ -373,6 +378,15 @@ void wordAnalyse(char word[], int len)  //把Flag们筛剩一个，或者一个�
             numFlag = false;
     }
 
+    if(kyFlag == false && idFlag == false && charFlag == false && numFlag == false)
+    {
+        //错误处理
+    }
+    else
+    {
+        wordOutput(ftable, word);
+    }
+
     if(opFlag == true)
     {
         int tmpHead = 0;
@@ -383,16 +397,18 @@ void wordAnalyse(char word[], int len)  //把Flag们筛剩一个，或者一个�
 
             //先搜长度为２的（符号的最长匹配原则）
             if(tmpHead + 2 <= len)
-            tmpBuf[0] = word[tmpHead];
-            tmpBuf[1] = word[tmpHead+1];
-            tmpBuf[2] = '\0';
-
-            for(int i = 0; i < SYMBOL_NUM && !tmpFound; i++)
             {
-                if(strcmp(tmpBuf, symbolList[i]) == 0)
+                tmpBuf[0] = word[tmpHead];
+                tmpBuf[1] = word[tmpHead+1];
+                tmpBuf[2] = '\0';
+
+                for(int i = 0; i < SYMBOL_NUM && !tmpFound; i++)
                 {
-                    tmpFound = true;
-                    tmpHead += 2;
+                    if(strcmp(tmpBuf, symbolList[i]) == 0)
+                    {
+                        tmpFound = true;
+                        tmpHead += 2;
+                    }
                 }
             }
 
@@ -414,7 +430,7 @@ void wordAnalyse(char word[], int len)  //把Flag们筛剩一个，或者一个�
 
             if(tmpFound)
             {
-                wordOutput(tmpBuf);
+                wordOutput(ftable, tmpBuf);
             }
             else
             {
@@ -427,32 +443,33 @@ void wordAnalyse(char word[], int len)  //把Flag们筛剩一个，或者一个�
 
 }
 
-void wordOutput(char *word)   //五种模式
+void wordOutput(FILE *fout, char *word)   //五种模式
 {
-    FILE *fout = fopen("out.txt", "r+");
-
     if(kyFlag == true)
     {
-        fprintf(fout, "<%s, ->\n", word);
+        //fprintf(fout, "<%s, ->\n", word);
+        fprintf(fout, "%s, -\n", word);
     }
     else if(idFlag == true)
     {
-        fprintf(fout, "<id, %s>\n", word);
+        //fprintf(fout, "<id, %s>\n", word);
+        fprintf(fout, "id, %s\n", word);
     }
     else if(numFlag == true)
     {
-        fprintf(fout, "<num, %s>\n", word);
+        //fprintf(fout, "<num, %s>\n", word);
+        fprintf(fout, "num, %s\n", word);
     }
-    else if(charFlag == true)
+    else if(charFlag)
     {
-        fprintf(fout, "<char, %s>\n", word);
+        //fprintf(fout, "<char, %s>\n", word);
+        fprintf(fout, "char, %s\n", word);
     }
     else if(opFlag == true)
     {
-        fprintf(fout, "<%s, ->\n", word);
+        //fprintf(fout, "<%s, ->\n", word);
+        fprintf(fout, "%s, -\n", word);
     }
-
-    fclose(fout);
 }
 
 void errorOutput()
@@ -465,6 +482,8 @@ void errorOutput()
 void init(FILE *fin, char inBuf[])
 {
     noteState = 0;
+    charFlag = 0;
+    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
 
     inBuf[inBufSize-1] = inBuf[inBufSize*2 - 1] = EOF;
     read(fin, inBuf, 0);
@@ -487,16 +506,21 @@ int main()
 
     preProcess();
 
-    //fin = fopen("pre.txt", "r");
+    FILE *fin, *ftable;
+    fin = fopen("pre.txt", "r");
+
+
+    ftable = fopen("table.txt", "w");
+    //ftable = stdout;
 
 
     //freopen("out.txt", "w", stdout);
-/*
+
     char inBuf[inBufSize * 2];//buffer for reading character
     char curWord[WORD_MAX_LEN+1];   //加１时为了存'\0'
     int curWordLen = 0;
 
-    init(inBuf);
+    init(fin, inBuf);
 
     int curPt = 0;  //开始指针
     int fwdPt = 0;  //向前指针
@@ -509,38 +533,47 @@ int main()
         {
             if(fwdPt == (inBufSize - 1))
             {
-                read(inBuf, 1); //重新填充右半区
-                fwd++;          //向右移动至下一个缓冲区
+                read(fin, inBuf, 1); //重新填充右半区
+                fwdPt++;          //向右移动至下一个缓冲区
             }
-            else if(fwd == (2*inBufSize - 1))
+            else if(fwdPt == (2*inBufSize - 1))
             {
-                read(inBuf, 0); //重新装填左半区
-                fwd = (fwd+1) % (2*inBufSize);
+                read(fin, inBuf, 0); //重新装填左半区
+                fwdPt = (fwdPt+1) % (2*inBufSize);
             }
             else
                 break;  //终止词法分析
         }
 
-        if(charFlag)    //如果是char字符那什么都合法
+        if(charFlag)    //如果是字符常量那什么都合法
         {
             if(charFlag == 1)
             {
                 if(inBuf[fwdPt] == '\'')
                 {
-                    wordAnalyse(curWord, curWordLen);
-                    curWordLen = 0;
-                    curWord[curWordLen++] = inBuf[fwdPt];
-                    wordAnalyse(curWord, curWordLen);
+                    if(curWordLen > 0)
+                    {
+                        wordAnalyse(ftable, curWord, curWordLen);
+                        curWordLen = 0;
+                    }
                     charFlag = 0;
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                    kyFlag = idFlag = numFlag = false;
+                    opFlag = bdFlag = true;
+                    curWord[curWordLen++] = inBuf[fwdPt];
+                    wordAnalyse(ftable, curWord, curWordLen);
                     curWordLen = 0;
+                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+
                 }
                 else if(inBuf[fwdPt] == '\n')
                 {
-                    wordAnalyse(curWord, curWordLen);
-                    charFlag = 0;
+                    if(curWordLen > 0)
+                    {
+                        wordAnalyse(ftable, curWord, curWordLen);
+                        curWordLen = 0;
+                    }
                     kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
-                    curWordLen = 0;
+                    charFlag = 0;
                 }
                 else
                     curWord[curWordLen++] = inBuf[fwdPt];
@@ -549,20 +582,28 @@ int main()
             {
                 if(inBuf[fwdPt] == '\"')
                 {
-                    wordAnalyse(curWord, curWordLen);
-                    curWordLen = 0;
-                    curWord[curWordLen++] = inBuf[fwdPt];
-                    wordAnalyse(curWord, curWordLen);
+                    if(curWordLen > 0)
+                    {
+                        wordAnalyse(ftable, curWord, curWordLen);
+                        curWordLen = 0;
+                    }
                     charFlag = 0;
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                    kyFlag = idFlag = numFlag = false;
+                    opFlag = bdFlag = true;
+                    curWord[curWordLen++] = inBuf[fwdPt];
+                    wordAnalyse(ftable, curWord, curWordLen);
                     curWordLen = 0;
+                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
                 }
                 else if(inBuf[fwdPt] == '\n')
                 {
-                    wordAnalyse(curWord, curWordLen);
+                    if(curWordLen > 0)
+                    {
+                        wordAnalyse(ftable, curWord, curWordLen);
+                        curWordLen = 0;
+                    }
                     charFlag = 0;
                     kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
-                    curWordLen = 0;
                 }
                 else
                     curWord[curWordLen++] = inBuf[fwdPt];
@@ -571,71 +612,68 @@ int main()
 
         else if(('a' <= inBuf[fwdPt] && inBuf[fwdPt] <= 'z' || 'A' <= inBuf[fwdPt] && inBuf[fwdPt] <= 'Z'))
         {
-            if(kyFlag == false && idFlag == false && charFlag == false)  //表示上一个词至此终止，于是对该词进行分析
+            if(curWordLen > 0 && kyFlag == false && idFlag == false && charFlag == false)  //表示上一个词至此终止，于是对该词进行分析
             {
-                wordAnalyse(curWord, curWordLen);
+                wordAnalyse(ftable, curWord, curWordLen);
                 kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
                 curWordLen = 0;
             }
-                                                                    //读入该字符，并删除一些可能
-            {
-                curWord[curWordLen++] = inBuf[fwdPt];
-                numFlag = opFlag = bdFlag = false;
-            }
+
+            curWord[curWordLen++] = inBuf[fwdPt];   //读入该字符，并删除一些可能
+            numFlag = opFlag = bdFlag = false;
+
         }
         else if('0' <= inBuf[fwdPt] && inBuf[fwdPt] <= '9')
         {
-            if(idFlag == false && numFlag == false && charFlag == false)    //表示上一个词至此终止，于是对该词进行分析
+            if(curWordLen > 0 && idFlag == false && numFlag == false && charFlag == false)    //表示上一个词至此终止，于是对该词进行分析
             {
-                wordAnalyse(curWord, curWordLen);
+                wordAnalyse(ftable, curWord, curWordLen);
                 kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
                 curWordLen = 0;
             }
-                                                                        //读入该字符，并删除一些可能
-            {
-                kyFlag = opFlag = bdFlag = false;
-                if(curWordLen == 0) //标识符不能以数字开头
-                    idFlag = false;
-                curWord[curWordLen++] = inBuf[fwdPt];
 
-            }
+            kyFlag = opFlag = bdFlag = false;           //读入该字符，并删除一些可能
+            if(curWordLen == 0) //标识符不能以数字开头
+                idFlag = false;
+            curWord[curWordLen++] = inBuf[fwdPt];
+
+
         }
-        else    //字符
+        else    //符号
         {
             if((inBuf[fwdPt] == '\t' || inBuf[fwdPt] == ' ' || inBuf[fwdPt] == '\n'))   //遇到whitespace，上一个词必定至此终止
             {
                 if(curWordLen > 0)
                 {
-                    wordAnalyse(curWord, curWordLen);
+                    wordAnalyse(ftable, curWord, curWordLen);
                     kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
                     curWordLen = 0;
                 }
             }
             else if(inBuf[fwdPt] == '_')    //下划线只可能在标识符或字符常量里面出现。
             {
-                if(idFlag == false && charFlag == false)         //表示上一个词至此终止，于是对该词进行分析
+                if(curWordLen > 0 && idFlag == false && charFlag == false)         //表示上一个词至此终止，于是对该词进行分析
                 {
-                    wordAnalyse(curWord, curWordLen);
+                    wordAnalyse(ftable, curWord, curWordLen);
                     kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
                     curWordLen = 0;
                 }
 
-                {
-                    curWord[curWordLen++] = inBuf[fwdPt];
-                    kyFlag = numFlag = opFlag = bdFlag = false;
-                }
+                curWord[curWordLen++] = inBuf[fwdPt];
+                kyFlag = numFlag = opFlag = bdFlag = false;
+
             }
             else if(inBuf[fwdPt] == '\'')
             {
                 if(curWordLen > 0)  //先处理上一个单词
                 {
-                    wordAnalyse(curWord, curWordLen);
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+                    wordAnalyse(ftable, curWord, curWordLen);
                     curWordLen = 0;
                 }
-
+                kyFlag = idFlag = numFlag = false;
+                opFlag = bdFlag = true;
                 curWord[curWordLen++] = inBuf[fwdPt];   //把当前的引号也读进去
-                wordAnalyse(curWord, curWordLen);       //并马上处理
+                wordAnalyse(ftable, curWord, curWordLen);       //并马上处理
                 kyFlag = idFlag = numFlag = opFlag = bdFlag = false;
                 charFlag = 1;
                 curWordLen = 0;
@@ -645,22 +683,22 @@ int main()
             {
                 if(curWordLen > 0)
                 {
-                    wordAnalyse(curWord, curWordLen);
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+                    wordAnalyse(ftable, curWord, curWordLen);
                     curWordLen = 0;
                 }
-
+                kyFlag = idFlag = numFlag = false;
+                opFlag = bdFlag = true;
                 curWord[curWordLen++] = inBuf[fwdPt];
-                wordAnalyse(curWord, curWordLen);
+                wordAnalyse(ftable, curWord, curWordLen);
                 kyFlag = idFlag = numFlag = opFlag = bdFlag = false;
                 charFlag = 2;
                 curWordLen = 0;
             }
             else
             {
-                if(curWordLen > 0)
+                if(opFlag == false && curWordLen > 0)
                 {
-                    wordAnalyse(curWord, curWordLen);
+                    wordAnalyse(ftable, curWord, curWordLen);
                     kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
                     curWordLen = 0;
                 }
@@ -671,6 +709,9 @@ int main()
 
         fwdPt++;
     }
-*/
+
+    fclose(fin);
+    fclose(ftable);
+
     return 0;
 }
