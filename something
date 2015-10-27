@@ -15,34 +15,29 @@ char *symbolList[] = { "+","-","*","/","%",";",",","{","}",")","(",">","<","=","
                        "++","--","==","\'","\"",":=",">=","<=","!=","&&","||","+=","-=","*=","/=","^",">>","<<","~", "#"
                      };//by order unnecessary notation
 
-const int inBufSize = 100;
-const int WORD_MAX_LEN = 100;
-const int KEY_WORD_NUM = 32;
-const int SYMBOL_NUM = 41;
+const int inBufSize = 100;      //实际上缓冲区的大小问题不大，因为它是按字符读取的。随手取了100
+const int WORD_MAX_LEN = 100;   //考虑到一般不会有太极端的变量名，所以取100
+const int KEY_WORD_NUM = 32;    //keyWordList[]的元素个数
+const int SYMBOL_NUM = 41;      //ymbolList[]的元素个数
 
-int noteState;   // 0表示无注释状态
-/*
-０表示无注释状态
-０状态下，读到'/'和'*'时分别转到１和４
-　　　　　读到'/'和'/'时分别转到１和５
-２状态下，读到’*'和'/'时分别转到１和０
-　　　　　读到’\n'时转到０
+int noteState;   //标示“去注释自动机”的状态，具体状态转移图见文档
 
-*/
-bool kyFlag;
-bool idFlag;
-//bool cnFlag;
-int charFlag;   //１表示单引号　２表示双引号
-bool numFlag;
-bool opFlag;
-bool bdFlag;
+/*以下五个flag指示"当前已读取信息是否仍有可能属于该类别"*/
+bool kyFlag;    //关键字
+bool idFlag;    //标识符
+int charFlag;   //０表示非字符串常量１表示单引号　２表示双引号
+bool numFlag;   //数字常量
+bool opFlag;    //运算符
 
+bool escapeCharFlag = 0;    //转义字符
+
+/*几个前向申明*/
 void init(FILE *, char []);
-int read(FILE *, char [], int);    //前向声明
+int read(FILE *, char [], int);
 void wordOutput(FILE *, char *);
 void errorOutput(FILE *, int, int, int &);
 
-void preProcess()
+void preProcess(FILE *ferror, int errorCnt)   //预处理：去注释＋统计行号
 {
     FILE *fin, *fpre;
     fin = fopen("in.txt", "r");
@@ -209,132 +204,21 @@ void preProcess()
         prePt++;
     }
 
+    if(noteState == 1 || noteState == 4)
+        errorOutput(ferror, -1, 2, errorCnt);
     fclose(fin);
     fclose(fpre);
 }
 
-/*
-bool noteJudge(char curCh, char nxtCh)
-{
-    switch(noteState)
-    {
-        case 0:
-            if(curCh == '/')
-            {
-                if(nxtCh == '*')
-                {
-                    noteState = 1;
-                    return 1;
-                }
-                else if(nxtCh == '/')
-                {
-                    noteState = 2;
-                    return 1;
-                }
-            }
-            return 0;
-
-        case 1:
-            if(curch == '*' && nxtCh == '/')
-            {
-                noteState = 0;
-                return 1;
-            }
-            return 1;
-
-        case 2:
-            if(nxtCh == '\n')
-            {
-                noteState = 0;
-                return 1;
-            }
-    }
-
-    switch(noteState)
-    {
-        case 0:
-            if(character == '/')
-                noteState = 1;
-
-            return 0;
-            break;
-        case 1:
-            if(character == '*')
-            {
-                noteState = 2;
-                return 1;
-            }
-            else if(character == '/')
-            {
-                noteState = 3;
-                return 1;
-            }
-            else
-            {
-                noteState = 0;
-                return 0
-            }
-            break;
-        case 2:
-            if(character == '*')
-            {
-                noteState = 1;
-                return 0;
-            }
-            break;
-        case 3:
-            if(character == '\n')
-            {
-                noteState = 0;
-                return 0;
-            }
-            break;
-        case 4:
-            if(character == '/')
-            {
-                noteState = 0;
-                return 0;
-            }
-            else
-            {
-                noteState = 2;
-                return 1;
-            }
-
-
-
-    }
-}*/
-
-/*
-bool KeyWordJudge(char *word)
-{
-    for(int i = 0; i < 32; i++)
-    {
-        if(strcmp(word, keyWordList[i]) == 0)
-            return true;
-    }
-    return false;
-}*/
-
-/*
-int getNum()
-{
-
-}
-
-double getNum() //重载
-{
-
-}*/
 
 void wordAnalyse(FILE *ftable, FILE *ferror, char word[], int len, int lineCnt, int &wordCnt, int &errorCnt)  //把Flag们筛剩一个，或者一个都没有
 {
-
-    if(len >= WORD_MAX_LEN + 1)
+    if(len > WORD_MAX_LEN) //当长度大于限定，判定为非法
     {
         errorOutput(ferror, lineCnt, 5, errorCnt);
+        return;
     }
+
 
     word[len] = '\0';
 
@@ -346,7 +230,7 @@ void wordAnalyse(FILE *ftable, FILE *ferror, char word[], int len, int lineCnt, 
             if(strcmp(word, keyWordList[i]) == 0)
             {
                 tmpFound = true;
-                idFlag = numFlag = charFlag = opFlag = bdFlag = false;
+                idFlag = numFlag = charFlag = opFlag = false;
             }
         }
         if(tmpFound == false)
@@ -363,17 +247,32 @@ void wordAnalyse(FILE *ftable, FILE *ferror, char word[], int len, int lineCnt, 
         //貌似不用处理
     }
 
-    if(numFlag == true) //判一下是否为一个合法的数字常量
+    if(numFlag == true) //判一下是否为一个合法的数字常量 eg：1.1e6是合法的
     {
         bool tmpFlag = true;
+        int eCnt = 0;
         int tmpDotCnt = 0;
 
         for(int i = 0; i < len && tmpFlag; i++)
         {
-            if(word[i] == '.')
+            if(word[i] == 'e')  //‘ｅ'只能出现一次
+            {
+                eCnt++;
+                if(eCnt > 1)
+                    tmpFlag = false;
+            }
+            else if(word[i] == '.')
             {
                 tmpDotCnt++;
-                if(tmpDotCnt > 1)
+                if(tmpDotCnt == 1)
+                {
+                    if(eCnt > 0)    //小数点不能出现在‘ｅ’后面
+                        tmpFlag = false;
+
+                    else if(!(i < len - 1 && isdigit(word[i+1])))//小数点后必须紧跟一个阿拉伯数字字符
+                        tmpFlag = false;
+                }
+                else if(tmpDotCnt > 1)  //小数点只能出现一次
                     tmpFlag = false;
             }
         }
@@ -382,11 +281,7 @@ void wordAnalyse(FILE *ftable, FILE *ferror, char word[], int len, int lineCnt, 
             numFlag = false;
     }
 
-    if(kyFlag == false && idFlag == false && charFlag == false && numFlag == false)
-    {
-        errorOutput(ferror, lineCnt, 4, errorCnt);
-    }
-    else
+    if(!(kyFlag == false && idFlag == false && charFlag == false && numFlag == false))
     {
         wordOutput(ftable, word);
         wordCnt++;
@@ -444,8 +339,8 @@ void wordAnalyse(FILE *ftable, FILE *ferror, char word[], int len, int lineCnt, 
             }
         }
     }
-
-    //flag一个一个判
+    if(kyFlag == false && idFlag == false && charFlag == false && numFlag == false && opFlag == false)
+        errorOutput(ferror, lineCnt, 4, errorCnt);  //每一种模式都匹配不上
 
 }
 
@@ -485,19 +380,19 @@ void errorOutput(FILE *ferror, int lineCnt, int state, int &errorCnt)
     switch(state)
     {
         case 1:
-            fprintf(ferror, "Line %d: absence of a quotation(\' or \") for a character constant.\n");
+            fprintf(ferror, "Line %d: absence of a quotation(\' or \") for a character constant.\n", lineCnt);
             break;
         case 2:
-            fprintf(ferror, "Line %d: absence of a '*/' for a note.\n");
+            fprintf(ferror, "Absence of a '*/' for a note at the end of the file.\n");
             break;
         case 3:
-            fprintf(ferror, "Line %d: illegal character.\n");
+            fprintf(ferror, "Line %d: illegal character.\n", lineCnt);
             break;
         case 4:
-            fprintf(ferror, "Line %d: illegal word.\n");
+            fprintf(ferror, "Line %d: illegal word.\n", lineCnt);
             break;
         case 5:
-            fprintf(ferror, "Line %d: overlength of a single word.\n");
+            fprintf(ferror, "Line %d: overlength of a single word.\n", lineCnt);
             break;
     }
 
@@ -517,7 +412,7 @@ void init(FILE *fin, char inBuf[])
 {
     noteState = 0;
     charFlag = 0;
-    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+    kyFlag = idFlag = numFlag = opFlag = true;
 
     inBuf[inBufSize-1] = inBuf[inBufSize*2 - 1] = EOF;
     read(fin, inBuf, 0);
@@ -536,25 +431,22 @@ int read(FILE *fin, char inBuf[], int region)  //读取结束返回０　否则�
 
 int main()
 {
-    //FILE *fin, *fpre, *ferror, *fstat;
-
-    preProcess();
-
     FILE *fin, *ftable, *ferror;
-    fin = fopen("pre.txt", "r");
-    ftable = fopen("table.txt", "w");
-    //fstat = foepn("stat.txt", "w");
+
     ferror = fopen("error.txt", "w");
-    //ftable = stdout;
-    //freopen("out.txt", "w", stdout);
 
     int lineCnt = 1;
     int wordCnt = 0;
     int charCnt = 0;
     int errorCnt = 0;
 
-    char inBuf[inBufSize * 2];//buffer for reading character
-    char curWord[WORD_MAX_LEN+10];   //为了存'\0'及做单词过程的处理
+    preProcess(ferror, errorCnt);
+
+    fin = fopen("pre.txt", "r");
+    ftable = fopen("table.txt", "w");
+
+    char inBuf[inBufSize * 2];  //buffer for reading character
+    char curWord[WORD_MAX_LEN+10];   //“+10”是因为除了自身大小还得考虑存'\0'及做单词过程的处理
     int curWordLen = 0;
 
     init(fin, inBuf);
@@ -589,15 +481,13 @@ int main()
             continue;
         }
 
-        if(inBuf[fwdPt] == '\n')
-            lineCnt++;  //记录当前执行到第几行便于返回错误信息，同时记录总行数
-        charCnt++;      //统计总字符数（不包括注释）
+
 
         if(charFlag)    //如果是字符常量那什么都合法
         {
             if(charFlag == 1)
             {
-                if(inBuf[fwdPt] == '\'')
+                if(inBuf[fwdPt] == '\'' && escapeCharFlag == false)
                 {
                     if(curWordLen > 0)
                     {
@@ -606,11 +496,11 @@ int main()
                     }
                     charFlag = 0;
                     kyFlag = idFlag = numFlag = false;
-                    opFlag = bdFlag = true;
+                    opFlag = true;
                     curWord[curWordLen++] = inBuf[fwdPt];
                     wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
                     curWordLen = 0;
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                    kyFlag = idFlag = numFlag = opFlag = true; //相关标记的更新
 
                 }
                 else if(inBuf[fwdPt] == '\n')
@@ -620,17 +510,22 @@ int main()
                         wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
                         curWordLen = 0;
                     }
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                    kyFlag = idFlag = numFlag = opFlag = true; //相关标记的更新
                     charFlag = 0;
 
                     errorOutput(ferror, lineCnt, 1, errorCnt);  //字符常量缺引号就换行
                 }
                 else
                     curWord[curWordLen++] = inBuf[fwdPt];
+
+                if(inBuf[fwdPt] == '\\')
+                    escapeCharFlag = !escapeCharFlag;
+                else
+                    escapeCharFlag = false;
             }
             if(charFlag == 2)
             {
-                if(inBuf[fwdPt] == '\"')
+                if(inBuf[fwdPt] == '\"' && escapeCharFlag == false)
                 {
                     if(curWordLen > 0)
                     {
@@ -639,11 +534,11 @@ int main()
                     }
                     charFlag = 0;
                     kyFlag = idFlag = numFlag = false;
-                    opFlag = bdFlag = true;
+                    opFlag = true;
                     curWord[curWordLen++] = inBuf[fwdPt];
                     wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
                     curWordLen = 0;
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                    kyFlag = idFlag = numFlag = opFlag = true; //相关标记的更新
                 }
                 else if(inBuf[fwdPt] == '\n')
                 {
@@ -653,26 +548,33 @@ int main()
                         curWordLen = 0;
                     }
                     charFlag = 0;
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                    kyFlag = idFlag = numFlag = opFlag = true; //相关标记的更新
 
                     errorOutput(ferror, lineCnt, 1, errorCnt);  //字符常量缺引号就换行
                 }
                 else
                     curWord[curWordLen++] = inBuf[fwdPt];
+
+                if(inBuf[fwdPt] == '\\')
+                    escapeCharFlag = !escapeCharFlag;
+                else
+                    escapeCharFlag = false;
             }
         }
 
         else if(('a' <= inBuf[fwdPt] && inBuf[fwdPt] <= 'z' || 'A' <= inBuf[fwdPt] && inBuf[fwdPt] <= 'Z'))
         {
-            if(curWordLen > 0 && kyFlag == false && idFlag == false && charFlag == false)  //表示上一个词至此终止，于是对该词进行分析
+            if(curWordLen > 0 && kyFlag == false && idFlag == false && charFlag == false && numFlag == false)  //表示上一个词至此终止，于是对该词进行分析
             {
                 wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
-                kyFlag = idFlag = numFlag = opFlag = bdFlag = true; //相关标记的更新
+                kyFlag = idFlag = numFlag = opFlag = true; //相关标记的更新
                 curWordLen = 0;
             }
 
             curWord[curWordLen++] = inBuf[fwdPt];   //读入该字符，并删除一些可能
-            numFlag = opFlag = bdFlag = false;
+            opFlag = false;
+            if(inBuf[fwdPt] != 'e')
+                numFlag = false;
 
         }
         else if('0' <= inBuf[fwdPt] && inBuf[fwdPt] <= '9')
@@ -680,11 +582,11 @@ int main()
             if(curWordLen > 0 && idFlag == false && numFlag == false && charFlag == false)    //表示上一个词至此终止，于是对该词进行分析
             {
                 wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
-                kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+                kyFlag = idFlag = numFlag = opFlag = true;
                 curWordLen = 0;
             }
 
-            kyFlag = opFlag = bdFlag = false;           //读入该字符，并删除一些可能
+            kyFlag = opFlag = false;           //读入该字符，并删除一些可能
             if(curWordLen == 0) //标识符不能以数字开头
                 idFlag = false;
             curWord[curWordLen++] = inBuf[fwdPt];
@@ -693,12 +595,18 @@ int main()
         }
         else    //符号
         {
-            if((inBuf[fwdPt] == '\t' || inBuf[fwdPt] == ' ' || inBuf[fwdPt] == '\n'))   //遇到whitespace，上一个词必定至此终止
+            if(inBuf[fwdPt] == '.')
+            {
+                curWord[curWordLen++] = inBuf[fwdPt];
+                kyFlag = idFlag = opFlag = false;
+            }
+
+            else if((inBuf[fwdPt] == '\t' || inBuf[fwdPt] == ' ' || inBuf[fwdPt] == '\n'))   //遇到whitespace，上一个词必定至此终止
             {
                 if(curWordLen > 0)
                 {
                     wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+                    kyFlag = idFlag = numFlag = opFlag = true;
                     curWordLen = 0;
                 }
             }
@@ -707,12 +615,12 @@ int main()
                 if(curWordLen > 0 && idFlag == false && charFlag == false)         //表示上一个词至此终止，于是对该词进行分析
                 {
                     wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+                    kyFlag = idFlag = numFlag = opFlag = true;
                     curWordLen = 0;
                 }
 
                 curWord[curWordLen++] = inBuf[fwdPt];
-                kyFlag = numFlag = opFlag = bdFlag = false;
+                kyFlag = numFlag = opFlag = false;
 
             }
             else if(inBuf[fwdPt] == '\'')
@@ -723,10 +631,10 @@ int main()
                     curWordLen = 0;
                 }
                 kyFlag = idFlag = numFlag = false;
-                opFlag = bdFlag = true;
+                opFlag = true;
                 curWord[curWordLen++] = inBuf[fwdPt];   //把当前的引号也读进去
                 wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);       //并马上处理
-                kyFlag = idFlag = numFlag = opFlag = bdFlag = false;
+                kyFlag = idFlag = numFlag = opFlag = false;
                 charFlag = 1;
                 curWordLen = 0;
 
@@ -739,10 +647,10 @@ int main()
                     curWordLen = 0;
                 }
                 kyFlag = idFlag = numFlag = false;
-                opFlag = bdFlag = true;
+                opFlag = true;
                 curWord[curWordLen++] = inBuf[fwdPt];
                 wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
-                kyFlag = idFlag = numFlag = opFlag = bdFlag = false;
+                kyFlag = idFlag = numFlag = opFlag = false;
                 charFlag = 2;
                 curWordLen = 0;
             }
@@ -751,13 +659,17 @@ int main()
                 if(opFlag == false && curWordLen > 0)
                 {
                     wordAnalyse(ftable, ferror, curWord, curWordLen, lineCnt, wordCnt, errorCnt);
-                    kyFlag = idFlag = numFlag = opFlag = bdFlag = true;
+                    kyFlag = idFlag = numFlag = opFlag = true;
                     curWordLen = 0;
                 }
                  curWord[curWordLen++] = inBuf[fwdPt];
                  kyFlag = idFlag = numFlag = false;
             }
         }
+
+        if(inBuf[fwdPt] == '\n')
+            lineCnt++;  //记录当前执行到第几行便于返回错误信息，同时记录总行数
+        charCnt++;      //统计总字符数（不包括注释）
 
         if(curWordLen >= WORD_MAX_LEN+1)    //对单词过长的处理
             curWordLen = WORD_MAX_LEN+1;
@@ -768,7 +680,6 @@ int main()
 
     fclose(fin);
     fclose(ftable);
-    //fclose(fstat);
     fclose(ferror);
 
     return 0;
