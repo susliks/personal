@@ -1,0 +1,988 @@
+/**
+
+
+*/
+
+//下标全部从零开始
+
+#include <iostream>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <cmath>
+#include <algorithm>
+#include <set>
+#include <queue>
+#include <stack>
+#include <map>
+#include <vector>
+#include <ctime>
+using namespace std;
+typedef long long ll;
+typedef unsigned long long ull;
+typedef pair<int, int> P;
+
+const int maxv = 20000;
+
+const int MAX_CHILD_NUM = 50;   //一个节点的孩子数目上限
+
+const int MAX_CHILD_SERVER_NUM = 40;//一个ToR switch下的server数目上限
+const int MAX_CHILD_RACK_NUM = 40;  //一个aggregation switch下的rack数目上限
+const int MAX_CHILD_POD_NUM = 10;   //一个core switch下的pod数目上限
+const int MAX_VC_VM_NUM = 10;       //一个VC下的VM数目上限
+const int MAX_VC_EDGE_NUM = 1000;   //一个VC下的VM间流量通路数目的上限
+const int MAX_VC_TEMPLATE = 100;    //VC模板的上限
+
+/*定义物理结构的三种资源的上限*/
+const int MAX_SERVER_CPU = 64;
+//const int MAX_SERVER_MEMORY = 32 * 1024;    //单位：MB
+const int MAX_SERVER_MEMORY = 32;    //单位：单位内存
+const int MAX_SERVER_UPBANDWIDTH = 1 * 1024;//单位：MB
+const int UPBANDWIDTH_LAMBDA1 = 1;          //这里两个lambda的定义参见kraken论文
+const int UPBANDWIDTH_LAMBDA2 = 1;
+
+struct Server
+{
+    int id;
+    int cpu;            //已使用的cpu资源
+    int memory;         //已使用的内存资源
+    int upbandwidth;    //已使用的上行带宽资源
+    int parent;         //父节点的id号码
+}server[maxv], tryserver[maxv];
+
+struct Switch
+{
+    int id;
+    int level;                  //交换机层数，自上往下分别是1、2、3层
+    int upbandwidth;            //已使用的上行带宽资源
+    int childcnt;               //子节点数目
+    int child[MAX_CHILD_NUM];   //子节点的id号码
+    int parent;                 //父节点的id号码
+}switches[maxv], tryswitches[maxv];
+
+struct VirtualMachine
+{
+    int id;
+    int location;       //对应物理机的id，标识当前虚拟机在哪台物理机上 -1表示未放置
+    int cpuCost;        //表示这个虚拟机需要多少cpu资源
+    int memoryCost;     //表示这个虚拟机需要多少内存资源
+};
+
+//VM间流量通路
+struct FlowLink
+{
+    int u, v;           //对应虚拟机的id，分别标识一条边的两个端点
+    int bandwidthCost;  //表示这条边需要预留多少流量
+};
+
+//VM间流量通路的邻接链表形式（为了简化计算）
+struct Edge
+{
+    int to, bandwidthCost, next;
+};
+
+struct VirtualCluster
+{
+    int id;
+    int vmCnt;                          //VC下的VM数目
+    VirtualMachine vm[MAX_VC_VM_NUM];   //VC下的VM
+    int edgeCnt;                        //VC下的VM间流量通路的数目
+    FlowLink link[MAX_VC_EDGE_NUM];     //VC下的VM间流量通路
+    int leftTime;
+
+    //增加邻接链表的存储方式
+    int head[MAX_VC_VM_NUM];
+    int si = 0;
+    Edge edge[MAX_VC_EDGE_NUM];
+}vc[maxv], vcTemplate[MAX_VC_TEMPLATE];
+
+struct Request
+{
+    int vcId;           //对应VirtualCluster的id，表明当前操作是对哪个VC进行
+    int mode;           //表示当前操作的类型   0：改变特定VM的cpu资源
+                        //                        1：改变特定VM的memory资源
+                        //                        2：改变特定edge的bandwidth资源
+    int subId;          //针对mode变量给出的操作类型，标识对应点或边的id
+    double percentage;  //变化的百分数，比如目标是“减少10%”时，percentage值为“-0.1”
+};
+
+struct ScheduleQueNode
+{
+    int id;
+    int waitSetSize;
+    int waitSet[MAX_VC_VM_NUM]; //桶排思想，waitSet[i]==1 表示当前VC的第i个vm还未被放置（等待中）
+                                //waitSet[i]==0 表示当前VC的第i个vm已被放置
+    //set<int> waitSet;
+    void build(int id, int vmCnt, int waitSet[])
+    {
+        this->id = id;
+        this->waitSetSize = 0;
+        for(int i = 0; i < vmCnt; i++)
+        {
+            this->waitSet[i] = waitSet[i];
+            if(this->waitSet[i] == 1)
+                this->waitSetSize++;
+        }
+    }
+
+};
+
+/*==========================Initialization==========================*/
+int servercnt;
+int switchcnt;
+int vccnt;
+int vctpltcnt;  //vc template count
+
+void init()
+{
+    servercnt = 0;
+    switchcnt = 0;
+    vccnt = 0;
+    vctpltcnt = 0;
+    //newReqSeqPtr = 0;
+    //scaleReqSeqPtr = 0;
+
+    //TODO：考虑：或许等到创建的时候再初始化？
+    //初始化VC邻接表
+    for(int i = 0; i < maxv; i++)
+    {
+        vc[i].si = 0;
+        memset(vc[i].head, -1, sizeof(vc[i].head));
+        memset(vc[i].edge, -1, sizeof(vc[i].edge));
+    }
+    for(int i = 0; i < MAX_VC_TEMPLATE; i++)
+    {
+        vcTemplate[i].si = 0;
+        memset(vcTemplate[i].head, -1, sizeof(vcTemplate[i].head));
+        memset(vcTemplate[i].edge, -1, sizeof(vcTemplate[i].edge));
+    }
+}
+
+void addServer(int parent, int cpu, int memory, int upbandwidth)
+{
+    server[servercnt].id = servercnt;
+    server[servercnt].cpu = cpu;
+    server[servercnt].memory = memory;
+    server[servercnt].upbandwidth = upbandwidth;
+    server[servercnt].parent = parent;
+    switches[parent].child[switches[parent].childcnt++] = servercnt;    //更新父节点的子节点信息
+    servercnt++;
+}
+
+void addSwitch(int parent, int upbandwidth) //如果无父节点，则parent值为-1
+{
+    if(parent != -1)
+        switches[switchcnt].level = switches[parent].level + 1;
+    else
+        switches[switchcnt].level = 1;
+
+    switches[switchcnt].id = switchcnt;
+    switches[switchcnt].parent = parent;
+    switches[switchcnt].upbandwidth = upbandwidth;
+    if(parent != -1)    //更新父节点的孩子信息
+        switches[parent].child[switches[parent].childcnt++] = switchcnt;
+    switches[switchcnt].childcnt = 0;
+    switchcnt++;
+}
+
+void build()
+{
+    /*===================建立物理拓扑=============================*/
+    addSwitch(-1, 0);   //core switch
+    int parentCoreSwitchId = switchcnt - 1;
+    for(int i = 0; i < MAX_CHILD_POD_NUM; i++)    //recursively buliding
+    {
+        addSwitch(parentCoreSwitchId, MAX_SERVER_UPBANDWIDTH *
+                  MAX_CHILD_SERVER_NUM * MAX_CHILD_RACK_NUM /
+                  UPBANDWIDTH_LAMBDA2);
+        int parentAggregationSwitchId = switchcnt - 1;
+        for(int j = 0; j < MAX_CHILD_RACK_NUM; j++)
+        {
+            addSwitch(parentAggregationSwitchId, MAX_SERVER_UPBANDWIDTH *
+                      MAX_CHILD_SERVER_NUM / UPBANDWIDTH_LAMBDA1);
+            int parentTORSwitchId = switchcnt - 1;
+            for(int k = 0; k < MAX_CHILD_SERVER_NUM; k++)
+            {
+                addServer(parentTORSwitchId, MAX_SERVER_CPU,
+                          MAX_SERVER_MEMORY, MAX_SERVER_UPBANDWIDTH);
+            }
+        }
+    }
+}
+
+//第一次从老树把所有内容都完整复制到新树
+//只执行一次，之后都会变成增量复制
+void firstCopyTryTree()
+{
+    for(int i = 0; i < servercnt; i++)
+    {
+        tryserver[i].cpu = server[i].cpu;
+        tryserver[i].id = server[i].id;
+        tryserver[i].memory = server[i].memory;
+        tryserver[i].parent = server[i].parent;
+        tryserver[i].upbandwidth = server[i].upbandwidth;
+    }
+    for(int i = 0; i < switchcnt; i++)
+    {
+        tryswitches[i].childcnt = switches[i].childcnt;
+        for(int j = 0; j < switches[i].childcnt; j++)
+            tryswitches[i].child[j] = switches[i].child[j];
+        tryswitches[i].id = switches[i].id;
+        tryswitches[i].parent = switches[i].parent;
+        tryswitches[i].upbandwidth = switches[i].upbandwidth;
+    }
+}
+
+//用来以增量的形式记录新树的修改位置（即“新树和老树的区别”）
+int trytreeServerUpdateLocCnt;
+int trytreeServerUpdateLoc[maxv];
+int trytreeSwitchUpdateLocCnt;
+int trytreeSwitchUpdateLoc[maxv];
+
+//用新树更新老树
+//更新成功时调用
+void updateFromTryTree()
+{
+    for(int i = 0; i < trytreeServerUpdateLocCnt; i++)
+    {
+        int loc = trytreeServerUpdateLoc[i];
+        server[loc].cpu = tryserver[loc].cpu;
+        server[loc].memory = tryserver[loc].memory;
+        server[loc].upbandwidth = tryserver[loc].upbandwidth;
+    }
+    for(int i = 0; i < trytreeSwitchUpdateLocCnt; i++)
+    {
+        int loc = trytreeSwitchUpdateLoc[i];
+        switches[loc].upbandwidth = tryswitches[loc].upbandwidth;
+    }
+    trytreeServerUpdateLocCnt = 0;
+    trytreeSwitchUpdateLocCnt = 0;
+}
+
+//用老树还原新树
+//更新失败时调用
+void rollbackTryTree()
+{
+    for(int i = 0; i < trytreeServerUpdateLocCnt; i++)
+    {
+        int loc = trytreeServerUpdateLoc[i];
+        tryserver[loc].cpu = server[loc].cpu;
+        tryserver[loc].memory = server[loc].memory;
+        tryserver[loc].upbandwidth = server[loc].upbandwidth;
+    }
+    for(int i = 0; i < trytreeSwitchUpdateLocCnt; i++)
+    {
+        int loc = trytreeSwitchUpdateLoc[i];
+        tryswitches[loc].upbandwidth = switches[loc].upbandwidth;
+    }
+    trytreeServerUpdateLocCnt = 0;
+    trytreeSwitchUpdateLocCnt = 0;
+}
+
+void vcAddEdge(VirtualCluster& vc, int u, int v, int cost)
+{
+    //邻接表加双向边
+    vc.edge[vc.si].to = v;
+    vc.edge[vc.si].bandwidthCost = cost;
+    vc.edge[vc.si].next = vc.head[u];
+    vc.head[u] = vc.si++;
+    vc.edge[vc.si].to = u;
+    vc.edge[vc.si].bandwidthCost = cost;
+    vc.edge[vc.si].next = vc.head[v];
+    vc.head[v] = vc.si++;
+}
+
+void loadVcTemplate()   //记录除了vmLoc以外的所有信息
+{
+    FILE *fin = fopen("VCtemplate.txt", "r");
+    int T;
+    fscanf(fin, "%d", &T);
+    while(T--)
+    {
+        int n, m;
+        fscanf(fin, "%d%d", &n, &m);
+        vcTemplate[vctpltcnt].vmCnt = n;
+        vcTemplate[vctpltcnt].edgeCnt = m;
+
+        for(int i = 0; i < n; i++)
+        {
+            int cpu, memory;
+            scanf("%d%d", &cpu, &memory);
+            vcTemplate[vctpltcnt].vm[i].id = i;
+            vcTemplate[vctpltcnt].vm[i].location = -1;
+            vcTemplate[vctpltcnt].vm[i].cpuCost = cpu;
+            vcTemplate[vctpltcnt].vm[i].memoryCost = memory;
+        }
+
+        for(int i = 0; i < m; i++)
+        {
+            int u, v, cost;
+            fscanf(fin, "%d%d", &u, &v, &cost);
+            vcTemplate[vctpltcnt].link[i].u = u;
+            vcTemplate[vctpltcnt].link[i].v = v;
+            vcTemplate[vctpltcnt].link[i].bandwidthCost = cost;
+            vcAddEdge(vcTemplate[vctpltcnt], u, v, cost);
+            vctpltcnt++;
+        }
+    }
+
+    fclose(fin);
+}
+
+/*===================Request Generator==========================*/
+const int MAX_REQ_NUM = 100000;
+const int SCALE_REQ_SEQ_NUM = 6;
+const int SCALE_REQ_MODE_NUM = 6;   //scale-up/scale-down请求中可能变化的模式
+const double CPU_CHANGE_FACTOR = 1.5;          //依据kraken论文中，设置资源的变化率
+const double MEMORY_CHANGE_FACTOR = 1.5;
+const double BANDWIDTH_CHANGE_FACTOR = 1.5;
+
+double tmpPoissonSeq[MAX_REQ_NUM];
+int newReqPoissonSeq[MAX_REQ_NUM];
+int scaleReqPoissonSeq[SCALE_REQ_SEQ_NUM][MAX_REQ_NUM];
+int newReqSeqPtr;
+int scaleReqSeqPtr;
+set<int> activeVc;
+int activeVcCnt;
+
+double randomExponential(double lambda) //生成负指数分布
+{
+    double pV = 0.0;
+    while(true)
+    {
+        pV = (double)rand() / (double)RAND_MAX;
+        if (pV != 1)
+        {
+            break;
+        }
+    }
+    pV = (-1.0 / lambda) * log(1 - pV);
+    return pV;
+}
+
+void generatePoissonSeq()
+{
+    for(int i = 1; i < MAX_REQ_NUM; i++)
+        tmpPoissonSeq[i] = tmpPoissonSeq[i-1] + randomExponential(0.36);
+    for(int i = 0; i < MAX_REQ_NUM; i++)    //取天花板数，保证在整点时刻处理请求
+        newReqPoissonSeq[i] = ceil(tmpPoissonSeq[i]);
+
+    for(int i = 0; i < SCALE_REQ_SEQ_NUM; i++)
+    {
+        for(int j = 1; j < MAX_REQ_NUM; j++)
+            tmpPoissonSeq[i] = tmpPoissonSeq[i-1] + randomExponential(0.36);
+        for(int j = 0; j < MAX_REQ_NUM; j++)
+            scaleReqPoissonSeq[i][j] = ceil(tmpPoissonSeq[i]);
+    }
+}
+
+//直接在vc数组创建一个元素
+//等放置的时候判断能不能放：如果不能，把lefttime置0
+int generateNewReq(int curTime) //-1：无请求 否则返回新创建的vc编号
+{
+    if(newReqPoissonSeq[newReqSeqPtr] == curTime)
+    {
+        newReqSeqPtr++;
+
+        int tpltId = rand() % vctpltcnt;    //随机取一个模板
+        vc[vccnt].id = vccnt;
+        vc[vccnt].leftTime = randomExponential((double)1 / 3600);   //依据kraken论文的说法，是依据均值3600的指数分布去生成随机数
+
+
+        vc[vccnt].vmCnt = vcTemplate[tpltId].vmCnt;
+        vc[vccnt].edgeCnt = vcTemplate[tpltId].edgeCnt;
+        vc[vccnt].si = vcTemplate[tpltId].si;
+        for(int i = 0; i < vc[vccnt].vmCnt; i++)
+        {
+            vc[vccnt].vm[i].id = vcTemplate[tpltId].vm[i].id;
+            vc[vccnt].vm[i].location = vcTemplate[tpltId].vm[i].location;
+            vc[vccnt].vm[i].cpuCost = vcTemplate[tpltId].vm[i].cpuCost;
+            vc[vccnt].vm[i].memoryCost = vcTemplate[tpltId].vm[i].memoryCost;
+        }
+        for(int i = 0; i < vc[vccnt].vmCnt; i++)
+            vc[vccnt].head[i] = vcTemplate[tpltId].head[i];
+        for(int i = 0; i < vc[vccnt].edgeCnt; i++)
+        {
+            vc[vccnt].link[i].u = vcTemplate[tpltId].link[i].u;
+            vc[vccnt].link[i].v = vcTemplate[tpltId].link[i].v;
+            vc[vccnt].link[i].bandwidthCost = vcTemplate[tpltId].link[i].bandwidthCost;
+        }
+        for(int i = 0; i < vc[vccnt].si; i++)
+        {
+            vc[vccnt].edge[i].to = vcTemplate[tpltId].edge[i].to;
+            vc[vccnt].edge[i].next = vcTemplate[tpltId].edge[i].next;
+            vc[vccnt].edge[i].bandwidthCost = vcTemplate[tpltId].edge[i].bandwidthCost;
+        }
+
+        return vccnt - 1;
+    }
+    else
+        return -1;
+}
+
+//先把该vc的信息存到一个临时缓冲区，更新VC和对应服务器的各参数
+//等放置的时候再判能不能放：如果不能，还原vc信息，还原服务器信息
+VirtualCluster vcPreState;  //暂存进行弹性伸缩的虚拟机的原状态
+int generateScaleReq(int processId, int curTime, int &reqMode)   //-1：无请求 否则返回修改的vc编号
+{
+    if(scaleReqPoissonSeq[processId][scaleReqSeqPtr] == curTime)
+    {
+        //随机选取一个活跃的vc
+        int activeVcId = rand() % activeVcCnt;
+        set<int>::iterator iter = activeVc.begin();
+        //TODO:可能存在进一步优化的方法
+        for(int i = 0; i < activeVcId; i++)
+            iter++;
+        int vcId = *iter;
+
+        //把VC的原状态(只需要关注三种资源）存到一个缓冲区
+        vcPreState.id = vc[vcId].id;
+        vcPreState.si = vc[vcId].si;
+        vcPreState.vmCnt = vc[vcId].vmCnt;
+        vcPreState.edgeCnt = vc[vcId].edgeCnt;
+        for(int i = 0; i < vcPreState.vmCnt; i++)
+        {
+            vcPreState.vm[i].id = vc[vcId].vm[i].id;
+            vcPreState.vm[i].location = vc[vcId].vm[i].location;
+            vcPreState.vm[i].cpuCost = vc[vcId].vm[i].cpuCost;
+            vcPreState.vm[i].memoryCost = vc[vcId].vm[i].memoryCost;
+        }
+        for(int i = 0; i < vcPreState.vmCnt; i++)
+        {
+            vcPreState.head[i] = vc[vcId].head[i];
+        }
+        for(int i = 0; i < vcPreState.edgeCnt; i++)
+        {
+            vcPreState.link[i].u = vc[vcId].link[i].u;
+            vcPreState.link[i].v = vc[vcId].link[i].v;
+            vcPreState.link[i].bandwidthCost = vc[vcId].link[i].bandwidthCost;
+        }
+        for(int i = 0; i < vcPreState.si; i++)
+        {
+            vcPreState.edge[i].to = vc[vcId].edge[i].to;
+            vcPreState.edge[i].next = vc[vcId].edge[i].next;
+            vcPreState.edge[i].bandwidthCost = vc[vcId].edge[i].bandwidthCost;
+        }
+
+        //把每个VM的location设置为-1，表示当前并没有放置的位置
+        for(int i = 0; i < vc[vcId].vmCnt; i++)
+        {
+            vc[vcId].vm[i].location = -1;
+        }
+
+
+        //更新VC和对应服务器的参数
+        //随机选取一种变化的模式
+        reqMode = rand() % SCALE_REQ_MODE_NUM;
+        switch(reqMode)
+        {
+            case 0:         //bandwidth upgrade
+                for(int i = 0; i < vc[vcId].edgeCnt; i++)
+                {
+                    vc[vcId].link[i].bandwidthCost = floor(vc[vcId].link[i].bandwidthCost * BANDWIDTH_CHANGE_FACTOR);
+                }
+                for(int i = 0; i < vc[vcId].si; i++)
+                {
+                    vc[vcId].edge[i].bandwidthCost = floor(vc[vcId].edge[i].bandwidthCost * BANDWIDTH_CHANGE_FACTOR);
+                }
+                break;
+            case 1:         //bandwidth downgrade
+                for(int i = 0; i < vc[vcId].edgeCnt; i++)
+                {
+                    vc[vcId].link[i].bandwidthCost = floor(vc[vcId].link[i].bandwidthCost / BANDWIDTH_CHANGE_FACTOR);
+                }
+                for(int i = 0; i < vc[vcId].si; i++)
+                {
+                    vc[vcId].edge[i].bandwidthCost = floor(vc[vcId].edge[i].bandwidthCost / BANDWIDTH_CHANGE_FACTOR);
+                }
+                break;
+            case 2:         //cpu upgrade
+                for(int i = 0; i < vc[vcId].vmCnt; i++)
+                {
+                    vc[vcId].vm[i].cpuCost = floor(vc[vcId].vm[i].cpuCost * CPU_CHANGE_FACTOR);
+                }
+                break;
+            case 3:         //cpu downgrade
+                for(int i = 0; i < vc[vcId].vmCnt; i++)
+                {
+                    vc[vcId].vm[i].cpuCost = floor(vc[vcId].vm[i].cpuCost / CPU_CHANGE_FACTOR);
+                }
+                break;
+            case 4:         //memory upgrade
+                for(int i = 0; i < vc[vcId].vmCnt; i++)
+                {
+                    vc[vcId].vm[i].memoryCost = floor(vc[vcId].vm[i].memoryCost * MEMORY_CHANGE_FACTOR);
+                }
+                break;
+            case 5:         //memory downgrade
+                for(int i = 0; i < vc[vcId].vmCnt; i++)
+                {
+                    vc[vcId].vm[i].memoryCost = floor(vc[vcId].vm[i].memoryCost / MEMORY_CHANGE_FACTOR);
+                }
+                break;
+        }
+
+        return vcId;
+    }
+    else
+        return -1;
+}
+
+/*===========================Scheduler==========================*/
+
+void rollbackVC(int vcId)
+{
+    //把VC的原状态(只需要关注三种资源）从缓冲区还原出来
+    //vc[vcId].id = vcPreState.id;
+    //vc[vcId].si = vcPreState.si;
+    //vc[vcId].vmCnt = vcPreState.vmCnt;
+    //vc[vcId].edgeCnt = vcPreState.edgeCnt;
+    for(int i = 0; i < vcPreState.vmCnt; i++)
+    {
+        //vcPreState.vm[i].id = vc[vcId].vm[i].id;
+        vc[vcId].vm[i].location = vcPreState.vm[i].location;
+        vc[vcId].vm[i].cpuCost = vcPreState.vm[i].cpuCost;
+        vc[vcId].vm[i].memoryCost = vcPreState.vm[i].memoryCost;
+    }
+    /*for(int i = 0; i < vcPreState.vmCnt; i++)
+    {
+        vcPreState.head[i] = vc[vcId].head[i];
+    }*/
+    for(int i = 0; i < vcPreState.edgeCnt; i++)
+    {
+        //vcPreState.link[i].u = vc[vcId].link[i].u;
+        //vcPreState.link[i].v = vc[vcId].link[i].v;
+        vc[vcId].link[i].bandwidthCost = vcPreState.link[i].bandwidthCost;
+    }
+    for(int i = 0; i < vcPreState.si; i++)
+    {
+        //vcPreState.edge[i].to = vc[vcId].edge[i].to;
+        //vcPreState.edge[i].next = vc[vcId].edge[i].next;
+        vc[vcId].edge[i].bandwidthCost = vcPreState.edge[i].bandwidthCost;
+    }
+}
+
+//只在背包问题部分起作用的全局dp数组，开全局是为了加快速度
+int knapsackDp[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];
+int knapsackPath[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];//记录路径，只有两种转移方式，0表示自己转移到自己，1表示选取了上一件物品的转移
+
+void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize)//需要更新waitSetSize的值
+{
+    int settleSetSize = 0;
+    int settleSet[MAX_VC_VM_NUM] = {0};
+
+    //knapsackProblem Part
+    int tmploc = 0;
+    int w1[MAX_VC_VM_NUM], w2[MAX_VC_VM_NUM], v[MAX_VC_VM_NUM];
+    int tmpMap[MAX_VC_VM_NUM];              //建立从w、v数组到waitSet的下标映射
+
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+    {
+        if(waitSet[i] == 1)
+        {
+            w1[tmploc] = vc[vcId].vm[i].cpuCost;
+            w2[tmploc] = v[tmploc] = vc[vcId].vm[i].memoryCost;
+            tmpMap[tmploc] = i;
+            tmploc++;
+        }
+    }
+
+    //memset(knapsackDp, 0, sizeof(knapsackDp));    //只需要初始化一维
+    int cpuLimit = tryserver[serverId].cpu;
+    int memoryLimit = tryserver[serverId].memory;
+    for(int i = 0; i <= cpuLimit; i++)
+        for(int j = 0; j <= memoryLimit; j++)
+        {
+            knapsackDp[waitSetSize][i][j] = 0;
+        }
+
+    for(int k = waitSetSize - 1; k >= 0; k--)
+        for(int i = 0; i <= cpuLimit; i++)
+            for(int j = 0; j <= memoryLimit; j++)
+            {
+                if(i < w1[k] || j < w2[k])
+                {
+                    knapsackDp[k][i][j] = knapsackDp[k+1][i][j];
+                    knapsackPath[k][i][j] = 0;
+                }
+                else
+                {
+                    if(knapsackDp[k+1][i - w1[k]][j - w2[k]] + v[k] > knapsackDp[k+1][i][j])
+                    {
+                        knapsackDp[k][i][j] = knapsackDp[k+1][i - w1[k]][j - w2[k]] + v[k];
+                        knapsackPath[k][i][j] = 1;
+                    }
+                    else
+                    {
+                        knapsackDp[k][i][j] = knapsackDp[k+1][i][j];
+                        knapsackPath[k][i][j] = 0;
+                    }
+                }
+            }
+
+    int tmpi = cpuLimit;
+    int tmpj = memoryLimit;
+    for(int k = 0; k < waitSetSize; k++)
+    {
+        if(knapsackPath[k][tmpi][tmpj] == 1)//选中了当前物品
+        {
+            settleSet[tmpMap[k]] = 1;   //注意这里要使用映射数组回到waitSet/settleSet那种状态
+            //选中了当前物品，说明回溯数组的上一个状态时knapsackPath[k+1][tmpi-w1[k]][tmpj-w2[k]]
+            tmpi -= w1[k];
+            tmpj -= w2[k];
+        }
+    }
+
+    //heuristicSearch part
+    int b1[MAX_VC_VM_NUM];
+    int b2[MAX_VC_VM_NUM];
+    int curOutBandwidth = 0;
+
+    //计算对外流量的时候顺便计算B1、B2值
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+    {
+        if(settleSet[i] == 1)
+        {
+            b1[i] = b2[i] = 0;
+            for(int j = vc[vcId].head[i]; j != -1; j = vc[vcId].edge[j].next)
+            {
+                int v = vc[vcId].edge[j].to;
+                if(settleSet[v] == 1)   //去点在内部
+                {
+                    b1[i] += vc[vcId].edge[j].bandwidthCost;
+                }
+                else                    //去点在外部
+                {
+                    b2[i] += vc[vcId].edge[j].bandwidthCost;
+                    curOutBandwidth += vc[vcId].edge[j].bandwidthCost;
+                }
+            }
+        }
+    }
+
+    while(settleSetSize > 0 && curOutBandwidth > tryserver[serverId].upbandwidth)
+    {
+        //根据启发规则进一步删点
+        int maxAim = -INF;
+        int delLoc = -1;
+        for(int i = 0; i < vc[vcId].vmCnt; i++)
+        {
+            if(settleSet[i] == 1)
+            {
+                int tmpAim = b2[i] - b1[i];
+                if(tmpAim > maxAim)
+                {
+                    maxAim = tmpAim;
+                    delLoc = i;
+                }
+            }
+        }
+        settleSet[delLoc] = 0;
+        settleSetSize--;
+
+        //重新计算对外流量的时候顺便计算B1、B2值
+        curOutBandwidth = 0;
+        for(int i = 0; i < vc[vcId].vmCnt; i++)
+        {
+            if(settleSet[i] == 1)
+            {
+                b1[i] = b2[i] = 0;
+                for(int j = vc[vcId].head[i]; j != -1; j = vc[vcId].edge[j].next)
+                {
+                    int v = vc[vcId].edge[j].to;
+                    if(settleSet[v] == 1)   //去点在内部
+                    {
+                        b1[i] += vc[vcId].edge[j].bandwidthCost;
+                    }
+                    else                    //去点在外部
+                    {
+                        b2[i] += vc[vcId].edge[j].bandwidthCost;
+                        curOutBandwidth += vc[vcId].edge[j].bandwidthCost;
+                    }
+                }
+            }
+        }
+    }
+
+    //与该VC下的已经settle下来的点依据lca，判断有没有在上层出现拥塞的情况
+
+
+    //用settleSet更新waitSet
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+    {
+        if(settleSet[i] == 1)
+        {
+            waitSet[i] = 0;
+            waitSetSize--;
+        }
+    }
+
+    //更新该VC的所有vm的location
+
+
+    //todo：
+    //用settleSet更新资源使用情况
+
+}
+
+void settleInSwitch()
+{
+
+}
+
+/*
+//功能：使用“背包算法”的原理，对于集合M中的虚拟机，在服务器s上尽量地放置，使CPU不超上限、内存不超上限且内存之和尽量的大
+//参数："curNode s"是当前虚拟机，"unallocatedSet M"是尝试在s服务器放置的虚拟机的集合
+//返回值：是原集合M中仍未能放置在当前s的虚拟机的集合
+knapsackProblem(curServer s, unallocatedSet M)
+{
+
+}
+
+//功能：使用“启发式搜索”，一开始假设把集合M中的VM全部放入服务器s，M置为空。若放置方案使s的上行带宽资源不足，则根据启发规则，
+//	从服务器上逐个删除VM并重新加入集合M，直到上行带宽资源不再不足
+//参数："curNode s"是当前虚拟机，"unallocatedSet M"是尝试在s服务器放置的虚拟机的集合
+//返回值：是原集合M中仍未能放置在当前s的虚拟机的集合
+heuristicSearch(curServer s, unallocatedSet M)
+{
+
+}*/
+
+//返回true表示这个请求可以被满足，返回false表示拒绝这个请求
+bool scheduler(int vcId, int reqMode)
+{
+    //判是否需要迁移,顺便更新新树
+    bool needToMigrate = false;
+
+    if(reqMode == 0 || reqMode == 1)
+    {
+        for(int i = 0; i < vc[vcId].edgeCnt && needToMigrate == false; i++)
+        {
+            int u = vc[vcId].link[i].u;
+            int v = vc[vcId].link[i].v;
+
+            //int tmpStack[10]; //暂存两个节点之间的边，三层交换机的结构下边数不会超过6
+            //int tmpStackCnt = 0;
+
+            int uLoc = vc[vcId].vm[u].location;
+            int vLoc = vc[vcId].vm[v].location;
+            //server层
+            if(uLoc != vLoc)
+            {
+                tryserver[uLoc].upbandwidth -= (vc[vcId].link[i].bandwidthCost - vcPreState.link[i].bandwidthCost);
+                tryserver[vLoc].upbandwidth -= (vc[vcId].link[i].bandwidthCost - vcPreState.link[i].bandwidthCost);
+                if(tryserver[uLoc].upbandwidth < 0 || tryserver[vLoc].upbandwidth < 0)
+                    needToMigrate = true;
+
+                //增量地记录新树的修改位置
+                trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = uLoc;
+                trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = vLoc;
+
+                uLoc = tryserver[uLoc].parent;
+                vLoc = tryserver[vLoc].parent;
+            }
+            //switch层
+            while(uLoc != vLoc)
+            {
+                tryswitches[uLoc].upbandwidth -= (vc[vcId].link[i].bandwidthCost - vcPreState.link[i].bandwidthCost);
+                tryswitches[vLoc].upbandwidth -= (vc[vcId].link[i].bandwidthCost - vcPreState.link[i].bandwidthCost);
+                if(tryswitches[uLoc].upbandwidth < 0 || tryswitches[vLoc].upbandwidth < 0)
+                    needToMigrate = true;
+
+                //增量地记录新树的修改位置
+                trytreeSwitchUpdateLoc[trytreeSwitchUpdateLocCnt++] = uLoc;
+                trytreeSwitchUpdateLoc[trytreeSwitchUpdateLocCnt++] = vLoc;
+
+                uLoc = tryswitches[uLoc].parent;
+                vLoc = tryswitches[vLoc].parent;
+            }
+        }
+    }
+    else if(reqMode == 2 || reqMode == 3)
+    {
+        for(int i = 0; i < vc[vcId].vmCnt && needToMigrate == false; i++)
+        {
+            int serverId = vc[vcId].vm[i].location;
+            tryserver[serverId].cpu -= (vc[vcId].vm[i].cpuCost - vcPreState.vm[i].cpuCost);
+            if(tryserver[serverId].cpu < 0)
+                needToMigrate = true;
+
+            //增量地记录新树的修改位置
+            trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = serverId;
+        }
+    }
+    else if(reqMode == 4 || reqMode == 5)
+    {
+        for(int i = 0; i < vc[vcId].vmCnt && needToMigrate == false; i++)
+        {
+            int serverId = vc[vcId].vm[i].location;
+            tryserver[serverId].memory -= (vc[vcId].vm[i].memoryCost - vcPreState.vm[i].memoryCost);
+            if(tryserver[serverId].memory < 0)
+                needToMigrate = true;
+
+            //增量地记录新树的修改位置
+            trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = serverId;
+        }
+    }
+
+
+
+    //若不需要迁移（表明请求可以满足），则直接用新树更新老树,退出
+    if(needToMigrate == false)
+    {
+        updateFromTryTree();
+        return true;
+    }
+
+
+    //能从这里往下走则说明需要迁移
+    rollbackTryTree();
+
+    //在新树上删除该VC所占资源
+    for(int i = 0; i < vcPreState.vmCnt; i++)
+    {
+        int loc = vcPreState.vm[i].location;
+        tryserver[loc].cpu -= vcPreState.vm[i].cpuCost;
+        tryserver[loc].memory -= vcPreState.vm[i].memoryCost;
+        trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = loc;
+    }
+    for(int i = 0; i < vcPreState.edgeCnt; i++)
+    {
+        int u = vcPreState.link[i].u;
+        int v = vcPreState.link[i].v;
+        int uLoc = vcPreState.vm[u].location;
+        int vLoc = vcPreState.vm[v].location;
+
+        //server level
+        if(uLoc != vLoc)
+        {
+            tryserver[uLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
+            tryserver[vLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
+            trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = uLoc;
+            trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = vLoc;
+            uLoc = tryserver[uLoc].parent;
+            vLoc = tryserver[vLoc].parent;
+        }
+        //switch level
+        while(uLoc != vLoc)
+        {
+            tryswitches[uLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
+            tryswitches[vLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
+            trytreeSwitchUpdateLoc[trytreeSwitchUpdateLocCnt++] = uLoc;
+            trytreeSwitchUpdateLoc[trytreeSwitchUpdateLocCnt++] = vLoc;
+            uLoc = tryswitches[uLoc].parent;
+            vLoc = tryswitches[vLoc].parent;
+        }
+    }
+
+    //试放
+    bool canMigrate = false;
+    queue<ScheduleQueNode> serverque;
+    queue<ScheduleQueNode> switchque;
+    //遍历一次VC的所有VM，往队列中加服务器
+    map<int, int> serverMap;    //serverId离散化，建立从原serverId到离散化后的server的id的映射
+    int tmpServerCnt = 0;
+    vector<int> tmpvec[MAX_VC_VM_NUM];
+    //先按服务器的位置整理出所有vm
+    for(int i = 0; i < vcPreState.vmCnt; i++)
+    {
+        int tmpServerId = vcPreState.vm[i].location;
+        if(serverMap.count(tmpServerId) == 1)
+        {
+            tmpvec[serverMap[tmpServerId]].push_back(i);
+        }
+        else
+        {
+            serverMap[tmpServerId] = tmpServerCnt++;
+            tmpvec[serverMap[tmpServerId]].push_back(i);
+        }
+    }
+    //把当前vc所用到的服务器及其待放点集加入队列
+    for(map<int, int>::iterator it = serverMap.begin(); it != serverMap.end(); it++)    //因为map默认以key值排序，所以这样遍历可以保证顺序访问server
+    {
+        int tmpSize = tmpvec[it.second].size();
+        int tmpWaitSet[MAX_VC_VM_NUM] = {0};
+        for(int i = 0; i < tmpSize; i++)
+        {
+            tmpWaitSet[tmpvec[it.second][i]] = 1;
+        }
+        ScheduleQueNode tmpNode;
+        tmpNode.build(it.first, vc[vcId].vmCnt, tmpWaitSet);
+        serverque.push(tmpNode);
+    }
+
+    //迭代服务器队列
+    while(!serverque.empty())
+    {
+        ScheduleQueNode cur = serverque.front();
+        serverque.pop();
+        int serverId = cur.id;
+
+        settleInServer(vcId, serverId, cur.waitSet, cur.waitSetSize);
+
+        if(cur.waitSetSize != 0)
+        {
+            ScheduleQueNode parentNode;
+            parentNode.build(server[serverId].parent, cur.waitSet, cur.waitSetSize);
+            switchque.push(parentNode);
+        }
+    //todo：进度至此
+    //。。。
+
+    }
+
+
+    if(canMigrate == true)
+    {
+        updateFromTryTree();
+        return true;
+    }
+    else if(canMigrate == false)
+    {
+        rollbackVC(vcId);
+        rollbackTryTree();
+        return false;
+    }
+}
+
+
+int main()
+{
+    srand((unsigned)time(NULL));
+
+    init();
+    build();
+    loadVcTemplate();
+
+    generatePoissonSeq();
+
+    int totalTime = 10 * 3600;   //程序总运行时间 单位：秒
+    int curTime = 0;
+    while(curTime < totalTime)
+    {
+        int vcId;
+        while((vcId = generateNewReq(curTime)) != -1)    //考虑统一时刻可能有多个请求到达
+        {
+
+        }
+
+        for(int i = 0; i < SCALE_REQ_SEQ_NUM; i++)  //6线程生成
+        {
+            int vcId, reqMode;
+            while((vcId = generateScaleReq(i, curTime, reqMode)) != -1)  //考虑统一时刻可能有多个请求到达
+            {
+                scheduler(vcId, reqMode);
+            }
+        }
+
+
+
+        curTime++;
+    }
+
+
+	return 0;
+}
+
+
+
