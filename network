@@ -112,8 +112,11 @@ struct ScheduleQueNode
     int waitSetSize;
     int waitSet[MAX_VC_VM_NUM]; //桶排思想，waitSet[i]==1 表示当前VC的第i个vm还未被放置（等待中）
                                 //waitSet[i]==0 表示当前VC的第i个vm已被放置
+    int settleSetSize;
+    int settleSet[MAX_VC_VM_NUM];//理同waitSet,settle[i]==1 表示当前VC的第i个vm已被放置在当前节点之下
+
     //set<int> waitSet;
-    void build(int id, int vmCnt, int waitSet[])
+    void init(int id, int vmCnt, const int &waitSet[], const int &settleSet[])
     {
         this->id = id;
         this->waitSetSize = 0;
@@ -123,9 +126,35 @@ struct ScheduleQueNode
             if(this->waitSet[i] == 1)
                 this->waitSetSize++;
         }
+        this->settleSetSize = 0;
+        for(int i = 0; i < vmCnt; i++)
+        {
+            this->settleSet[i] = settleSet[i];
+            if(this->settleSet[i] == 1)
+                this->settleSetSize++;
+        }
+    }
+
+    void update(int vmCnt, const int &waitSet[], const int &settleSet[])
+    {
+        for(int i = 0; i < vmCnt; i++)
+        {
+            if(waitSet[i] == 1)
+            {
+                this->waitSet = waitSet[i];
+                this->waitSetSize++;
+            }
+            if(settleSet[i] == 1)
+            {
+                this->settleSet[i] = settleSet[i];
+                this->settleSetSize[i]++;
+            }
+        }
     }
 
 };
+
+bool visited[2][maxv];   //记录服务器和交换机是否被访问过的标记数组，第0维标记服务器，第1维标记交换机
 
 /*==========================Initialization==========================*/
 int servercnt;
@@ -566,10 +595,12 @@ void rollbackVC(int vcId)
 int knapsackDp[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];
 int knapsackPath[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];//记录路径，只有两种转移方式，0表示自己转移到自己，1表示选取了上一件物品的转移
 
-void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize)//需要更新waitSetSize的值
+void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int settleSet[], int &settleSetSize)//需要更新waitSetSize的值
 {
-    int settleSetSize = 0;
-    int settleSet[MAX_VC_VM_NUM] = {0};
+    visited[0][serverId] = 1;
+
+    //int settleSetSize = 0;
+    //int settleSet[MAX_VC_VM_NUM] = {0};
 
     //knapsackProblem Part
     int tmploc = 0;
@@ -704,9 +735,6 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize)//�
         }
     }
 
-    //与该VC下的已经settle下来的点依据lca，判断有没有在上层出现拥塞的情况
-
-
     //用settleSet更新waitSet
     for(int i = 0; i < vc[vcId].vmCnt; i++)
     {
@@ -718,16 +746,120 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize)//�
     }
 
     //更新该VC的所有vm的location
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+    {
+        if(settleSet[i] == 1)
+        {
+            vc[vcId].vm[i].location = serverId;
+        }
+    }
 
-
-    //todo：
     //用settleSet更新资源使用情况
+    for(int i = 0; i < vc[vcId].vmCnt; i++) //(内存、cpu）
+    {
+        if(settleSet[i] == 1)
+        {
+            tryserver[serverId].cpu -= vc[vcId].vm[i].cpuCost;
+            tryserver[serverId].memory -= vc[vcId].vm[i].memoryCost;
+        }
+    }
+    tryserver[serverId].upbandwidth -= curOutBandwidth;//(带宽）
 
 }
 
-void settleInSwitch()
+void settleInSwitch(int vcId, int switchId, int waitSet[], int &waitSetSize, int settleSet[], int &settleSetSize)
 {
+    visited[1][switchId] = 1;
 
+    //遍历未访问过的子节点
+    for(int i = 0; i < switches[switchId].childcnt && waitSetSize > 0; i++) //未放置完且仍有未访问的子节点
+    {
+        if(switches[switchId].level == 3)   //说明子节点是服务器
+        {
+            int childId = switches[switchId].child[i];
+            if(visited[0][childId]) //如果当前节点已经被访问过
+                continue;
+
+            //todo
+            int childSettleSet[MAX_VC_VM_NUM] = {0};
+            int childSettleSetSize = 0;
+            settleInServer(vcId, childId, waitSet, waitSetSize, childSettleSet, childSettleSetSize);
+            for(int i = 0; i < vc[vcId].vmCnt; i++) //合并settleSet
+            {
+                if(childSettleSet[i] == 1)
+                {
+                    settleSet[i] = 1;
+                    settleSetSize++;
+                }
+            }
+        }
+        else    //说明子节点是交换机
+        {
+            int childId = switches[switchId].child[i];
+            if(visited[1][childId])  //如果当前节点已经被访问过
+                continue;
+
+            //todo
+            int childSettleSet[MAX_VC_VM_NUM] = {0};
+            int childSettleSetSize = 0;
+            settleInSwitch(vcId, childId, waitSet, waitSetSize, childSettleSet, childSettleSetSize);
+            for(int i = 0; i < vc[vcId].vmCnt; i++) //合并settleSet
+            {
+                if(childSettleSet[i] == 1)
+                {
+                    settleSet[i] = 1;
+                    settleSetSize++;
+                }
+            }
+        }
+    }
+
+    //todo:“往下走”地上传
+
+    //计算子节点的上行带宽
+    int curOutBandwidth = 0;
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+    {
+        if(settleSet[i] == 0)//说明这个点在外部
+        {
+            for(int j = vc[vcId].head[i]; j != -1; j = vc[vcId].edge[j].next)
+            {
+                int v = vc[vcId].edge[j].to;
+                if(settleSet[v] == 1)   //去点在内部
+                {
+                    curOutBandwidth += vc[vcId].edge[j].bandwidthCost;
+                }
+            }
+        }
+    }
+
+    if(curOutBandwidth <= tryswitches[switchId].upbandwidth)    //带宽足够
+    {
+        //nothing to do
+    }
+    else    //带宽不足
+    {
+        //把settleSet中的vm的location信息清空
+        for(int i = 0; i < vc[vcId].vmCnt; i++)
+        {
+            if(settleSet[i] == 1)
+            {
+                vc[vcId].vm[i].location = -1;
+            }
+        }
+
+        //把settleSet中的点重新拿到waitSet中
+        for(int i = 0; i < vc[vcId].vmCnt; i++)
+        {
+            if(settleSet[i] == 1)
+            {
+                waitSet[i] = 1;
+                waitSetSize++;
+                settleSet[i] = 0;
+                settleSetSize--;
+            }
+        }
+    }
 }
 
 /*
@@ -838,6 +970,8 @@ bool scheduler(int vcId, int reqMode)
     //能从这里往下走则说明需要迁移
     rollbackTryTree();
 
+    memset(visited, 0, sizeof(visited));    //清空访问标记数组
+
     //在新树上删除该VC所占资源
     for(int i = 0; i < vcPreState.vmCnt; i++)
     {
@@ -912,25 +1046,161 @@ bool scheduler(int vcId, int reqMode)
     }
 
     //迭代服务器队列
+    ScheduleQueNode parentNode;
+    int preParentId = -1;
     while(!serverque.empty())
     {
         ScheduleQueNode cur = serverque.front();
         serverque.pop();
         int serverId = cur.id;
 
-        settleInServer(vcId, serverId, cur.waitSet, cur.waitSetSize);
+        settleInServer(vcId, serverId, cur.waitSet, cur.waitSetSize, cur.settleSet, cur.settleSetSize);
 
-        if(cur.waitSetSize != 0)
+        //如果当前服务器还不能盛放所有的VM，则要把其父节点压入交换机队列
+
+        if(cur.settleSetSize < vc[vcId].vmCnt)
         {
-            ScheduleQueNode parentNode;
-            parentNode.build(server[serverId].parent, cur.waitSet, cur.waitSetSize);
-            switchque.push(parentNode);
+            if(preParentId == -1)   //第一次进入这个循环
+            {
+                preParentId = server[serverId].parent;
+                parentNode.init(server[serverId].parent, vc[vcId].vmCnt, cur.waitSet, cur.settleSet);
+            }
+            else if(server[serverId].parent == parentNode.id)//与上一个服务器的父节点相同
+            {
+                parentNode.update(vc[vcId].vmCnt, cur.waitSet, cur.settleSet)
+            }
+            else(server[serverId].parent != parentNode.id)    //与上一个服务器的父节点不同
+            {
+                switchque.push(parentNode); //压入上一个交换机节点
+                preParentId = server[serverId].parent;
+                parentNode.init(server[serverId].parent, vc[vcId].vmCnt, cur.waitSet, cur.settleSet);
+            }
         }
-    //todo：进度至此
-    //。。。
-
     }
+    switchque.push(parentNode); //压入最后一个交换机节点
 
+
+    //迭代交换机队列
+    preParentId = -1;   //复用上面“迭代服务器”过程的数据结构
+
+    //建立新的waitSet和settleSet
+    int newWaitSet[MAX_VC_VM_NUM];
+    int newSettleSet[MAX_VC_VM_NUM];
+
+    while(!switchque.empty())
+    {
+        ScheduleQueNode cur = serverque.front();
+        serverque.pop();
+        int switchId = cur.id;
+        int newWaitSetSize = cur.waitSetSize;
+        int newSettleSetSize = cur.settleSetSize;
+        for(int i = 0; i < vc[vcId].vmCnt; i++)
+        {
+            newWaitSet[i] = cur.waitSet[i];
+            newSettleSet[i] = cur.settleSet[i];
+        }
+        settleInSwitch(vcId, switchId, newWaitSet, newWaitSetSize, newSettleSet, newSettleSetSize);
+        //settleInSwitch(vcId, switchId, cur.waitSet, cur.waitSetSize, cur.settleSet, cur.settleSetSize);
+
+        //todo
+        if(newSettleSetSize == vc[vcId].vmCnt)   //以当前节点为根的子树已经可以盛放所有vm
+        {
+            canMigrate = true;
+            break;
+        }
+        else if(switches[switchId].level == 1)   //当前已经是交换机的根节点了
+        {
+            canMigrate = false;
+            break;
+        }
+        else    //以当前节点为根的子树还不能盛放所有vm
+        {
+            //计算子节点的上行带宽
+            int curOutBandwidth = 0;
+            for(int i = 0; i < vc[vcId].vmCnt; i++)
+            {
+                if(newSettleSet[i] == 0)//说明这个点在外部
+                {
+                    for(int j = vc[vcId].head[i]; j != -1; j = vc[vcId].edge[j].next)
+                    {
+                        int v = vc[vcId].edge[j].to;
+                        if(newSettleSet[v] == 1)   //去点在内部
+                        {
+                            curOutBandwidth += vc[vcId].edge[j].bandwidthCost;
+                        }
+                    }
+                }
+            }
+
+            if(curOutBandwidth <= tryswitches[switchId].upbandwidth)    //带宽足够
+            {
+                tryswitches[switchId].upbandwidth -= curOutBandwidth;
+
+                //上传
+                if(preParentId == -1)   //第一次进入这个循环
+                {
+                    preParentId = switches[switchId].parent;
+                    parentNode.init(switches[switchId].parent, vc[vcId].vmCnt, newWaitSet, newSettleSet);
+                }
+                else if(switches[switchId].parent == parentNode.id)//与上一个交换机的父节点相同
+                {
+                    parentNode.update(vc[vcId].vmCnt, newWaitSet, newSettleSet)
+                }
+                else(switches[switchId].parent != parentNode.id)    //与上一个交换机的父节点不同
+                {
+                    switchque.push(parentNode); //压入上一个交换机节点
+                    preParentId = switches[switchId].parent;
+                    parentNode.init(switches[switchId].parent, vc[vcId].vmCnt, newWaitSet, newSettleSet);
+                }
+
+            }
+            else    //带宽不足
+            {
+                //把settleSet中的vm的location信息清空
+                for(int i = 0; i < vc[vcId].vmCnt; i++)
+                {
+                    if(newSettleSet[i] == 1)
+                    {
+                        vc[vcId].vm[i].location = -1;
+                    }
+                }
+
+                //把settleSet中的点重新拿到waitSet中
+                for(int i = 0; i < vc[vcId].vmCnt; i++)
+                {
+                    if(newSettleSet[i] == 1)
+                    {
+                        newWaitSet[i] = 1;
+                        newWaitSetSize++;
+                        newSettleSet[i] = 0;
+                        newSettleSetSize--;
+                    }
+                }
+
+                //上传
+                if(preParentId == -1)   //第一次进入这个循环
+                {
+                    preParentId = switches[switchId].parent;
+                    parentNode.init(switches[switchId].parent, vc[vcId].vmCnt, newWaitSet, newSettleSet);
+                }
+                else if(switches[switchId].parent == parentNode.id)//与上一个交换机的父节点相同
+                {
+                    parentNode.update(vc[vcId].vmCnt, newWaitSet, newSettleSet)
+                }
+                else(switches[switchId].parent != parentNode.id)    //与上一个交换机的父节点不同
+                {
+                    switchque.push(parentNode); //压入上一个交换机节点
+                    preParentId = switches[switchId].parent;
+                    parentNode.init(switches[switchId].parent, vc[vcId].vmCnt, newWaitSet, newSettleSet);
+                }
+            }
+        }
+
+        if(switchque.empty())   //todo：不知道对不对，一个比较抽搐的写法：能走到这里说明迭代还没有结束（上面有个break），而队列为空说明还有一个父节点没有被压入队列
+        {
+            switchque.push(parentNode); //压入“最后一个”交换机节点
+        }
+    }
 
     if(canMigrate == true)
     {
@@ -943,6 +1213,12 @@ bool scheduler(int vcId, int reqMode)
         rollbackTryTree();
         return false;
     }
+}
+
+bool placement(int vcId)
+{
+
+
 }
 
 
@@ -963,7 +1239,7 @@ int main()
         int vcId;
         while((vcId = generateNewReq(curTime)) != -1)    //考虑统一时刻可能有多个请求到达
         {
-
+            placement(vcId);
         }
 
         for(int i = 0; i < SCALE_REQ_SEQ_NUM; i++)  //6线程生成
