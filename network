@@ -1272,8 +1272,11 @@ bool scheduler(int vcId, int reqMode)
 
     if(canMigrate == true)
     {
+        migCnt++;   //在需要迁移且成功迁移时，统计一下迁移次数
+        updateMigMemoryCnt(vcId);
+
         //updateFromTryTree();
-        deleteVCResource(vcId);
+        updateFromVC(vcId);
         return true;
     }
     else if(canMigrate == false)
@@ -1475,6 +1478,26 @@ void terminateJudge(int curTime)
     vcEndCheck.erase(range.first, range.second);
 }
 
+//===============evaluation====================
+int newReqAcCnt, newReqTotCnt;      //新建请求的计数
+int scaleReqAcCnt, scaleReqTotCnt;  //调整请求的计数
+int migMemoryCnt;   //迁移总内存
+int migCnt;         //迁移总次数
+//todo：定义未明
+int migTotTime;     //花在迁移的时间
+
+void updateMigMemoryCnt(int vcId)   //更新总的迁移内存数
+{
+    for(int i = 0; i < vcPreState.vmCnt; i++)
+    {
+        if(vcPreState.vm[i].location != vc[vcId].vm[i].location)
+        {
+            migMemoryCnt += vcPreState.vm[i].memoryCost;
+        }
+    }
+}
+
+
 int main()
 {
     srand((unsigned)time(NULL));
@@ -1494,7 +1517,9 @@ int main()
         int vcId;
         while((vcId = generateNewReq(curTime)) != -1)    //考虑统一时刻可能有多个请求到达
         {
-            placement(vcId);
+            newReqTotCnt++;
+            if(placement(vcId) == true)
+                newReqAcCnt++;
         }
 
         for(int i = 0; i < SCALE_REQ_SEQ_NUM; i++)  //6线程生成
@@ -1502,7 +1527,9 @@ int main()
             int vcId, reqMode;
             while((vcId = generateScaleReq(i, curTime, reqMode)) != -1)  //考虑统一时刻可能有多个请求到达
             {
-                scheduler(vcId, reqMode);
+                scaleReqTotCnt++;
+                if(scheduler(vcId, reqMode) == true)
+                    scaleReqAcCnt++;
             }
         }
 
