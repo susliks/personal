@@ -37,8 +37,8 @@ int trytreeSwitchUpdateLocCnt;
 int trytreeSwitchUpdateLoc[maxv];
 
 //只在背包问题部分起作用的全局dp数组，开全局是为了加快速度
-int knapsackDp[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];
-int knapsackPath[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];//记录路径，只有两种转移方式，0表示自己转移到自己，1表示选取了上一件物品的转移
+int knapsackDp[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU + 2][MAX_SERVER_MEMORY + 2];
+int knapsackPath[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU + 2][MAX_SERVER_MEMORY + 2];//记录路径，只有两种转移方式，0表示自己转移到自己，1表示选取了上一件物品的转移
 
 
 //==================evaluation==================

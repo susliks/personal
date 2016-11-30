@@ -63,6 +63,46 @@ void deleteVCResource(int vcId)
     }
 }
 
+//在老树上删除当前vc的原状态所占用的资源
+void deletePreVCResource()
+{
+    //更新CPU、MEMORY资源
+    for(int i = 0; i < vcPreState.vmCnt; i++)
+    {
+        int serverId = vcPreState.vm[i].location;
+        server[serverId].cpu += vcPreState.vm[i].cpuCost;
+        server[serverId].memory += vcPreState.vm[i].memoryCost;
+    }
+
+    //更新BandWidth资源 依次对边做LCA
+    for(int i = 0; i < vcPreState.edgeCnt; i++)
+    {
+        int u = vcPreState.link[i].u;
+        int v = vcPreState.link[i].v;
+
+        int uLoc = vcPreState.vm[u].location;
+        int vLoc = vcPreState.vm[v].location;
+        //server层
+        if(uLoc != vLoc)
+        {
+            server[uLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
+            server[vLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
+
+            uLoc = server[uLoc].parent;
+            vLoc = server[vLoc].parent;
+        }
+        //switch层
+        while(uLoc != vLoc)
+        {
+            switches[uLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
+            switches[vLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
+
+            uLoc = switches[uLoc].parent;
+            vLoc = switches[vLoc].parent;
+        }
+    }
+}
+
 //用vc来更新老树
 void updateFromVC(int vcId) //不再做资源是否满足的判断
 {
@@ -232,6 +272,29 @@ void rollbackVC(int vcId)
 
 void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int settleSet[], int &settleSetSize)//需要更新waitSetSize的值
 {
+    //cout << "enter settleInServer" << endl;
+
+    //DEBUG
+    if(serverId == -1)
+    {
+        int a = 0;
+        a = a + 1;
+    }
+
+    //DEBUG
+    int debugCnt = 0;
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+        if(waitSet[i] == 1)
+            debugCnt++;
+    if(debugCnt != waitSetSize)
+    {
+        int a = 0;
+        a++;
+    }
+
+
+    int preWaitSetSize = waitSetSize;
+
     visited[0][serverId] = 1;
 
     //int settleSetSize = 0;
@@ -262,6 +325,9 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int
             knapsackDp[waitSetSize][i][j] = 0;
         }
 
+//DEBUG
+int tmp = waitSetSize;
+
     for(int k = waitSetSize - 1; k >= 0; k--)
         for(int i = 0; i <= cpuLimit; i++)
             for(int j = 0; j <= memoryLimit; j++)
@@ -286,6 +352,7 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int
                 }
             }
 
+
     int tmpi = cpuLimit;
     int tmpj = memoryLimit;
     for(int k = 0; k < waitSetSize; k++)
@@ -294,6 +361,7 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int
         {
             settleSet[tmpMap[k]] = 1;   //注意这里要使用映射数组回到waitSet/settleSet那种状态
             //选中了当前物品，说明回溯数组的上一个状态时knapsackPath[k+1][tmpi-w1[k]][tmpj-w2[k]]
+            settleSetSize++;
             tmpi -= w1[k];
             tmpj -= w2[k];
         }
@@ -375,6 +443,14 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int
     {
         if(settleSet[i] == 1)
         {
+            //DEBUG
+            if(waitSet[i] != 1)
+            {
+                int tmp = settleSetSize;
+                int a = 0;
+                a++;
+            }
+
             waitSet[i] = 0;
             waitSetSize--;
         }
@@ -400,11 +476,18 @@ void settleInServer(int vcId, int serverId, int waitSet[], int &waitSetSize, int
     }
     tryserver[serverId].upbandwidth -= curOutBandwidth;//(带宽）
 
+
+    if(settleSetSize == preWaitSetSize) //说明当前节点没有东西需要继续往外走，说明可能还可以继续放
+        visited[0][serverId] = 0;
 }
 
 
 void settleInSwitch(int vcId, int switchId, int waitSet[], int &waitSetSize, int settleSet[], int &settleSetSize)
 {
+    //cout << "enter settleInSwitch" << endl;
+
+    int preWaitSetSize = waitSetSize;
+
     visited[1][switchId] = 1;
 
     //遍历未访问过的子节点
@@ -489,6 +572,14 @@ void settleInSwitch(int vcId, int switchId, int waitSet[], int &waitSetSize, int
         {
             if(settleSet[i] == 1)
             {
+                //DEBUG
+                if(waitSet[i] != 0)
+                {
+                    int a = 0;
+                    a++;
+                }
+
+
                 waitSet[i] = 1;
                 waitSetSize++;
                 settleSet[i] = 0;
@@ -496,11 +587,38 @@ void settleInSwitch(int vcId, int switchId, int waitSet[], int &waitSetSize, int
             }
         }
     }
+
+    if(settleSetSize == preWaitSetSize) //说明当前节点可能还可以继续放
+        visited[1][switchId] = 0;
 }
 
 //返回true表示这个请求可以被满足，返回false表示拒绝这个请求
 bool scheduler(int vcId, int reqMode)
 {
+    //特判是否有单个vm的某种资源超过理论最大值
+    bool limitExceeded = false;
+    for(int i = 0; i < vc[vcId].vmCnt && !limitExceeded; i++)
+    {
+        if(vc[vcId].vm[i].cpuCost > MAX_SERVER_CPU)
+            limitExceeded = true;
+        if(vc[vcId].vm[i].memoryCost > MAX_SERVER_MEMORY)
+            limitExceeded = true;
+    }
+    for(int i = 0; i < vc[vcId].edgeCnt && !limitExceeded; i++)
+    {
+        if(vc[vcId].link[i].bandwidthCost > MAX_SERVER_UPBANDWIDTH)
+            limitExceeded = true;
+    }
+    if(limitExceeded)
+    {
+        rollbackVC(vcId);
+        return false;
+    }
+
+
+
+    firstCopyTryTree();
+
     //判是否需要迁移,顺便更新新树
     bool needToMigrate = false;
 
@@ -588,14 +706,20 @@ bool scheduler(int vcId, int reqMode)
     //能从这里往下走则说明需要迁移
     rollbackTryTree();
 
+    //把每个VM的location设置为-1，表示当前并没有放置的位置
+    for(int i = 0; i < vc[vcId].vmCnt; i++)
+    {
+        vc[vcId].vm[i].location = -1;
+    }
+
     memset(visited, 0, sizeof(visited));    //清空访问标记数组
 
     //在新树上删除该VC所占资源
     for(int i = 0; i < vcPreState.vmCnt; i++)
     {
         int loc = vcPreState.vm[i].location;
-        tryserver[loc].cpu -= vcPreState.vm[i].cpuCost;
-        tryserver[loc].memory -= vcPreState.vm[i].memoryCost;
+        tryserver[loc].cpu += vcPreState.vm[i].cpuCost;
+        tryserver[loc].memory += vcPreState.vm[i].memoryCost;
         trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = loc;
     }
     for(int i = 0; i < vcPreState.edgeCnt; i++)
@@ -608,8 +732,8 @@ bool scheduler(int vcId, int reqMode)
         //server level
         if(uLoc != vLoc)
         {
-            tryserver[uLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
-            tryserver[vLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
+            tryserver[uLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
+            tryserver[vLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
             trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = uLoc;
             trytreeServerUpdateLoc[trytreeServerUpdateLocCnt++] = vLoc;
             uLoc = tryserver[uLoc].parent;
@@ -618,8 +742,8 @@ bool scheduler(int vcId, int reqMode)
         //switch level
         while(uLoc != vLoc)
         {
-            tryswitches[uLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
-            tryswitches[vLoc].upbandwidth -= vcPreState.link[i].bandwidthCost;
+            tryswitches[uLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
+            tryswitches[vLoc].upbandwidth += vcPreState.link[i].bandwidthCost;
             trytreeSwitchUpdateLoc[trytreeSwitchUpdateLocCnt++] = uLoc;
             trytreeSwitchUpdateLoc[trytreeSwitchUpdateLocCnt++] = vLoc;
             uLoc = tryswitches[uLoc].parent;
@@ -696,7 +820,8 @@ bool scheduler(int vcId, int reqMode)
             }
         }
     }
-    switchque.push(parentNode); //压入最后一个交换机节点
+    if(preParentId != -1)
+        switchque.push(parentNode); //压入最后一个交换机节点
 
 
     //迭代交换机队列
@@ -708,8 +833,8 @@ bool scheduler(int vcId, int reqMode)
 
     while(!switchque.empty())
     {
-        ScheduleQueNode cur = serverque.front();
-        serverque.pop();
+        ScheduleQueNode cur = switchque.front();
+        switchque.pop();
         int switchId = cur.id;
         int newWaitSetSize = cur.waitSetSize;
         int newSettleSetSize = cur.settleSetSize;
@@ -789,6 +914,13 @@ bool scheduler(int vcId, int reqMode)
                 {
                     if(newSettleSet[i] == 1)
                     {
+                        //DEBUG
+                        if(newWaitSet[i] != 0)
+                        {
+                            int a = 0;
+                            a++;
+                        }
+
                         newWaitSet[i] = 1;
                         newWaitSetSize++;
                         newSettleSet[i] = 0;
@@ -827,6 +959,7 @@ bool scheduler(int vcId, int reqMode)
         updateMigMemoryCnt(vcId);
 
         //updateFromTryTree();
+        deletePreVCResource();
         updateFromVC(vcId);
         return true;
     }

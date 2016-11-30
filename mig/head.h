@@ -202,8 +202,8 @@ void terminateJudge(int curTime);
 extern int FFServerPosPtr; //在试图返回-1或1时修改
 
 int FFsettleInSwitch(int vcId, int switchId, int &curVmPos, int intervalLB, int intervalRB, int serverStartPos);  //返回值：0，暂时放置结束 -1放置失败，结束 1放置成功
-int FFsettleInServer(int vcId, int serverId, int curVmPos, int intervalLB, int intervalRB, int serverStartPos);
-bool placement(int vcId);
+int FFsettleInServer(int vcId, int serverId, int &curVmPos, int intervalLB, int intervalRB, int serverStartPos);
+bool placement(int vcId, int curTime);
 
 //==================scheduler==================
 //用来以增量的形式记录新树的修改位置（即“新树和老树的区别”）
@@ -213,12 +213,13 @@ extern int trytreeSwitchUpdateLocCnt;
 extern int trytreeSwitchUpdateLoc[maxv];
 
 //只在背包问题部分起作用的全局dp数组，开全局是为了加快速度
-extern int knapsackDp[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];
-extern int knapsackPath[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU][MAX_SERVER_MEMORY];//记录路径，只有两种转移方式，0表示自己转移到自己，1表示选取了上一件物品的转移
+extern int knapsackDp[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU + 2][MAX_SERVER_MEMORY + 2];
+extern int knapsackPath[MAX_VC_VM_NUM + 1][MAX_SERVER_CPU + 2][MAX_SERVER_MEMORY + 2];//记录路径，只有两种转移方式，0表示自己转移到自己，1表示选取了上一件物品的转移
 
 
 void firstCopyTryTree();    //只执行一次，之后都会变成增量复制
 void deleteVCResource(int vcId);    //VC消亡时，删除网络上该vc所占资源
+void deletePreVCResource();         //在老树上删除当前vc的原状态所占用的资源
 void updateFromVC(int vcId);        //用vc来更新老树
                                     //不再做资源是否满足的判断
 void updateFromTryTree();
@@ -240,5 +241,6 @@ extern int migCnt;         //迁移总次数
 extern int migTotTime;     //花在迁移的时间
 
 void updateMigMemoryCnt(int vcId);   //更新总的迁移内存数
+void printEvaluationResult();
 
 //#endif // HEAD_H_INCLUDED

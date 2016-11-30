@@ -6,6 +6,7 @@ int main()
 
     init();
     build();
+    firstCopyTryTree();
     loadVcTemplate();
 
     generatePoissonSeq();
@@ -14,6 +15,13 @@ int main()
     int curTime = 0;
     while(curTime < totalTime)
     {
+        //DEBUG
+        if(curTime == 1000)
+        {
+            int a;
+            a ++;
+        }
+
         cout << curTime << endl;
         terminateJudge(curTime);
 
@@ -21,13 +29,13 @@ int main()
         while((vcId = generateNewReq(curTime)) != -1)    //考虑统一时刻可能有多个请求到达
         {
             newReqTotCnt++;
-            if(placement(vcId) == true)
+            if(placement(vcId, curTime) == true)
                 newReqAcCnt++;
         }
 
         for(int i = 0; i < SCALE_REQ_SEQ_NUM; i++)  //6线程生成
         {
-            int vcId, reqMode;
+            int reqMode;
             while((vcId = generateScaleReq(i, curTime, reqMode)) != -1)  //考虑统一时刻可能有多个请求到达
             {
                 scaleReqTotCnt++;
@@ -39,6 +47,13 @@ int main()
         curTime++;
     }
 
+    cout << newReqAcCnt << endl;
+    cout << newReqTotCnt << endl;
+
+    //DEBUG
+    cout << activeVcCnt << endl;
+
+    printEvaluationResult();
 
 	return 0;
 }

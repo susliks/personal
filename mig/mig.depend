@@ -1,8 +1,8 @@
 # depslib dependency file v1.0
-1479891776 source:c:\users\dishu\desktop\mig\main.cpp
+1480519126 source:c:\users\dishu\desktop\mig\main.cpp
 	"head.h"
 
-1479891715 c:\users\dishu\desktop\mig\head.h
+1480517281 c:\users\dishu\desktop\mig\head.h
 	<iostream>
 	<cstdio>
 	<cstring>
@@ -16,21 +16,21 @@
 	<vector>
 	<ctime>
 
-1479718978 source:c:\users\dishu\desktop\mig\evaluation.cpp
+1479903021 source:c:\users\dishu\desktop\mig\evaluation.cpp
 	"head.h"
 
 1479718609 source:c:\users\dishu\desktop\mig\init.cpp
 	"head.h"
 
-1479889615 source:c:\users\dishu\desktop\mig\placement.cpp
+1480519567 source:c:\users\dishu\desktop\mig\placement.cpp
 	"head.h"
 
-1479892564 source:c:\users\dishu\desktop\mig\req.cpp
+1480519707 source:c:\users\dishu\desktop\mig\req.cpp
 	"head.h"
 
-1479893613 source:c:\users\dishu\desktop\mig\scheduler.cpp
+1480522056 source:c:\users\dishu\desktop\mig\scheduler.cpp
 	"head.h"
 
-1479891717 source:c:\users\dishu\desktop\mig\globalvar.cpp
+1480511158 source:c:\users\dishu\desktop\mig\globalvar.cpp
 	"head.h"
 
